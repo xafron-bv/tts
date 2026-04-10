@@ -91,8 +91,13 @@ Read text aloud from inside vim with sentence highlighting and playback controls
 
 ### Install
 
-Add to your plugin manager, or symlink directly:
+**vim-plug:**
+```vim
+Plug 'xafron-bv/tts', { 'rtp': 'tts-vim', 'do': 'pip3 install --user numpy sounddevice websockets' }
+```
+Then `:PlugInstall`.
 
+**Manual / symlink:**
 ```bash
 # vim
 ln -s ~/devel/tts/tts-vim ~/.vim/pack/tts/start/tts-vim
