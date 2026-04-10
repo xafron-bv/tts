@@ -189,7 +189,7 @@ class TTSServer:
     async def handle_play(self, cmd):
         self.teardown_playback()
 
-        self.sentences = split_sentences(strip_markdown(cmd.get("text", "")))
+        self.sentences = split_sentences(cmd.get("text", ""))
         if not self.sentences:
             emit("error", message="No readable text")
             return
@@ -389,7 +389,7 @@ class TTSServer:
             "sm": "true", "ca": "true", "af": "wav",
             "ins": ("Reading Style:\n" + c["instructions"]) if c.get("instructions") else "",
             "model": c.get("model", "25flash-default"), "gdr": c.get("gender", "f"),
-            "t": self.sentences[idx], "responseId": rid,
+            "t": strip_markdown(self.sentences[idx]), "responseId": rid,
         }))
 
     async def receiver(self):
