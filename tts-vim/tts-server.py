@@ -34,6 +34,33 @@ def load_config():
     return {}
 
 
+def strip_markdown(text):
+    """Remove markdown formatting for cleaner TTS reading."""
+    # Fenced code blocks
+    text = re.sub(r'```[^\n]*\n.*?```', '', text, flags=re.DOTALL)
+    text = re.sub(r'~~~[^\n]*\n.*?~~~', '', text, flags=re.DOTALL)
+    # Inline code — keep content, strip backticks
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+    # Images
+    text = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', text)
+    # Links [text](url) → text
+    text = re.sub(r'\[([^\]]+)\]\([^)]*\)', r'\1', text)
+    # Header markers
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    # Horizontal rules
+    text = re.sub(r'^\s*[-*_]{3,}\s*$', '', text, flags=re.MULTILINE)
+    # Bold/italic
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'__(.+?)__', r'\1', text)
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    text = re.sub(r'~~(.+?)~~', r'\1', text)
+    # Blockquote markers
+    text = re.sub(r'^>\s?', '', text, flags=re.MULTILINE)
+    # HTML tags
+    text = re.sub(r'<[^>]+>', '', text)
+    return text
+
+
 def split_sentences(text):
     text = re.sub(r"\s+", " ", text).strip()
     if not text:
@@ -145,7 +172,7 @@ class TTSServer:
     async def handle_play(self, cmd):
         self.teardown_playback()
 
-        self.sentences = split_sentences(cmd.get("text", ""))
+        self.sentences = split_sentences(strip_markdown(cmd.get("text", "")))
         if not self.sentences:
             emit("error", message="No readable text")
             return
