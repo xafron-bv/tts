@@ -38,4 +38,4 @@ if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
 fi
 
 echo ""
-echo "Done! Run: tts-read --setup"
+echo "Done! Run: tts-read --login"
