@@ -15,6 +15,7 @@ command! TTSPrev  call tts#Prev()
 if !get(g:, 'tts_no_mappings', 0)
   nnoremap <silent> <Leader>tr :TTSPlay<CR>
   vnoremap <silent> <Leader>tr :TTSPlay<CR>
+  nnoremap <silent> <Leader>tf :.,$TTSPlay<CR>
   nnoremap <silent> <Leader>ts :TTSStop<CR>
   nnoremap <silent> <Leader>tp :TTSPause<CR>
   nnoremap <silent> <Leader>tn :TTSNext<CR>

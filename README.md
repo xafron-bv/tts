@@ -113,12 +113,13 @@ Same Python dependencies as the CLI (`pip3 install numpy sounddevice websockets 
 | Mapping | Command | Action |
 |---------|---------|--------|
 | `<Leader>tr` | `:TTSPlay` | Read buffer (or visual selection) |
-| `<Leader>ts` | `:TTSStop` | Stop |
-| `<Leader>tp` | `:TTSPause` | Toggle pause |
+| `<Leader>tf` | `:.,$TTSPlay` | Read from current line to end |
+| `<Leader>tp` | `:TTSPause` | Toggle pause / resume |
 | `<Leader>tn` | `:TTSNext` | Next sentence |
 | `<Leader>tb` | `:TTSPrev` | Previous sentence |
 | `<Leader>t]` | | Speed up |
 | `<Leader>t[` | | Speed down |
+| `<Leader>ts` | `:TTSStop` | Stop |
 
 The current sentence is highlighted and the view scrolls to follow. Set `let g:tts_no_mappings = 1` to disable default mappings and define your own.
 

@@ -236,7 +236,12 @@ endfunction
 
 function! s:UpdateStatus() abort
   redraw
+  let l = exists('g:mapleader') ? g:mapleader : '\'
   let icon = s:paused ? '⏸' : '▶'
-  let msg = printf(' TTS %s [%d/%d] %sx', icon, s:current_idx + 1, s:total, string(s:speed))
-  echohl ModeMsg | echon msg | echohl None
+
+  echohl ModeMsg
+  echon printf(' TTS %s [%d/%d] %sx', icon, s:current_idx + 1, s:total, string(s:speed))
+  echohl Comment
+  echon printf('  %sp:pause %sn:next %sb:prev %s]:fast %s[:slow %ss:stop %sf:from line', l.'t',l.'t',l.'t',l.'t',l.'t',l.'t',l.'t')
+  echohl None
 endfunction
