@@ -22,13 +22,16 @@ if [ -d "$CONFIG_DIR" ]; then
   fi
 fi
 
-# Remove pip packages
-read -p "  Uninstall Python packages (numpy, sounddevice, websockets)? [y/N] " answer
-if [[ "$answer" =~ ^[Yy]$ ]]; then
-  pip3 uninstall -y numpy sounddevice websockets 2>/dev/null || true
-  echo "  Packages removed"
-else
-  echo "  Kept packages"
+# Remove venv
+VENV_DIR="$HOME/.local/share/tts-reader/venv"
+if [ -d "$VENV_DIR" ]; then
+  read -p "  Remove virtual environment ($VENV_DIR)? [y/N] " answer
+  if [[ "$answer" =~ ^[Yy]$ ]]; then
+    rm -rf "$VENV_DIR"
+    echo "  Removed $VENV_DIR"
+  else
+    echo "  Kept $VENV_DIR"
+  fi
 fi
 
 echo ""

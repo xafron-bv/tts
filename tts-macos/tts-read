@@ -11,11 +11,18 @@ Usage:
 Keyboard:  Ctrl-C to stop.
 """
 
+import sys
+import os
+
+# Re-exec with the venv Python so dependencies are always available
+# (macOS Shortcuts uses /usr/bin/python3 which lacks our packages)
+_VENV_PYTHON = os.path.expanduser("~/.local/share/tts-reader/venv/bin/python3")
+if os.path.exists(_VENV_PYTHON) and os.path.realpath(sys.executable) != os.path.realpath(_VENV_PYTHON):
+    os.execv(_VENV_PYTHON, [_VENV_PYTHON] + sys.argv)
+
 import asyncio
 import json
 import base64
-import sys
-import os
 import re
 import argparse
 import subprocess

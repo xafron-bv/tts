@@ -2,7 +2,6 @@
 set -e
 
 echo "Installing tts-read dependencies..."
-pip3 install --user numpy sounddevice websockets
 
 if ! command -v brew &>/dev/null; then
   echo "Warning: Homebrew not found. Install portaudio manually."
@@ -12,6 +11,14 @@ elif ! brew list portaudio &>/dev/null 2>&1; then
 else
   echo "portaudio already installed."
 fi
+
+VENV_DIR="$HOME/.local/share/tts-reader/venv"
+if [ ! -d "$VENV_DIR" ]; then
+  echo "Creating virtual environment..."
+  python3 -m venv "$VENV_DIR"
+fi
+echo "Installing Python packages..."
+"$VENV_DIR/bin/pip" install --upgrade numpy sounddevice websockets
 
 # Symlink to ~/.local/bin (no sudo needed)
 BIN_DIR="$HOME/.local/bin"
