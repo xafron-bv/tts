@@ -13,13 +13,13 @@ command! TTSPrev  call tts#Prev()
 
 " Default mappings (override with g:tts_no_mappings = 1)
 if !get(g:, 'tts_no_mappings', 0)
-  nnoremap <silent> <Leader>tr :TTSPlay<CR>
-  vnoremap <silent> <Leader>tr :TTSPlay<CR>
-  nnoremap <silent> <Leader>tf :.,$TTSPlay<CR>
-  nnoremap <silent> <Leader>ts :TTSStop<CR>
+  nnoremap <silent> <Leader>tt :TTSPlay<CR>
+  vnoremap <silent> <Leader>tt :TTSPlay<CR>
+  nnoremap <silent> <Leader>tg :.,$TTSPlay<CR>
+  nnoremap <silent> <Leader>tq :TTSStop<CR>
   nnoremap <silent> <Leader>tp :TTSPause<CR>
-  nnoremap <silent> <Leader>tn :TTSNext<CR>
-  nnoremap <silent> <Leader>tb :TTSPrev<CR>
+  nnoremap <silent> <Leader>tj :TTSNext<CR>
+  nnoremap <silent> <Leader>tk :TTSPrev<CR>
   nnoremap <silent> <Leader>t] :call tts#Speed(1)<CR>
   nnoremap <silent> <Leader>t[ :call tts#Speed(-1)<CR>
 endif
