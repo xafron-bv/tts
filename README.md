@@ -79,15 +79,22 @@ Controls are available when running in a terminal. When piped from a macOS Short
 ### Global shortcut
 
 1. Open **Shortcuts.app** → click **+** to create a new shortcut
-2. Name it something like "Read Clipboard Aloud"
+2. Name it something like "Read Aloud"
 3. Add a **Run Shell Script** action (search for it in the actions sidebar)
 4. Set the shell to `/bin/zsh` and paste:
    ```
    export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+   saved="$(pbpaste)"
+   osascript -e 'tell application "System Events" to keystroke "c" using command down'
+   sleep 0.2
    pbpaste | tts-read
+   echo -n "$saved" | pbcopy
    ```
 5. In the shortcut's info panel (ⓘ), check **Use as Quick Action** → **Services Menu**
 6. Go to **System Settings → Keyboard → Keyboard Shortcuts → Services → General**, find your shortcut and assign a key (e.g. ⌥R)
+7. Grant Shortcuts accessibility access: **System Settings → Privacy & Security → Accessibility** → enable **Shortcuts**
+
+Select text in any app and press your shortcut — it copies the selection, reads it aloud, then restores your previous clipboard contents.
 
 The `PATH` export is needed because Shortcuts doesn't inherit your shell profile, so it won't find `tts-read` or Homebrew-installed dependencies like `python3` otherwise.
 
