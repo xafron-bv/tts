@@ -61,17 +61,6 @@ echo "hello" | tts-read         # pipe text
 tts-read -s 2 -v puck           # 2x speed, different voice
 ```
 
-### Vim
-
-```vim
-:w !tts-read                    " read current buffer
-:'<,'>w !tts-read               " read selection
-
-" .vimrc mapping
-vnoremap <leader>r :w !tts-read<CR>
-nnoremap <leader>r :w !tts-read<CR>
-```
-
 ### Global shortcut
 
 **skhd** — add to `~/.skhdrc`:
@@ -79,7 +68,54 @@ nnoremap <leader>r :w !tts-read<CR>
 alt - r : pbpaste | ~/.local/bin/tts-read
 ```
 
-**macOS Shortcuts** — create a shortcut running `pbpaste | ~/.local/bin/tts-read`, assign a key in System Settings → Keyboard → Shortcuts → Services.
+**macOS Shortcuts** (no extra tools needed):
+
+1. Open **Shortcuts.app** → click **+** to create a new shortcut
+2. Name it something like "Read Clipboard Aloud"
+3. Add a **Run Shell Script** action (search for it in the actions sidebar)
+4. Set the shell to `/bin/zsh` and paste:
+   ```
+   export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+   pbpaste | tts-read
+   ```
+5. In the shortcut's info panel (ⓘ), check **Use as Quick Action** → **Services Menu**
+6. Go to **System Settings → Keyboard → Keyboard Shortcuts → Services → General**, find your shortcut and assign a key (e.g. ⌥R)
+
+The `PATH` export is needed because Shortcuts doesn't inherit your shell profile, so it won't find `tts-read` or Homebrew-installed dependencies like `python3` otherwise.
+
+---
+
+## Vim / Neovim Plugin (`tts-vim/`)
+
+Read text aloud from inside vim with sentence highlighting and playback controls.
+
+### Install
+
+Add to your plugin manager, or symlink directly:
+
+```bash
+# vim
+ln -s ~/devel/tts/tts-vim ~/.vim/pack/tts/start/tts-vim
+
+# neovim
+ln -s ~/devel/tts/tts-vim ~/.local/share/nvim/site/pack/tts/start/tts-vim
+```
+
+Same Python dependencies as the CLI (`pip3 install numpy sounddevice websockets && brew install portaudio`). Uses the same config at `~/.config/tts-reader/config.json` — run `tts-read --login` first if you haven't.
+
+### Controls
+
+| Mapping | Command | Action |
+|---------|---------|--------|
+| `<Leader>tr` | `:TTSPlay` | Read buffer (or visual selection) |
+| `<Leader>ts` | `:TTSStop` | Stop |
+| `<Leader>tp` | `:TTSPause` | Toggle pause |
+| `<Leader>tn` | `:TTSNext` | Next sentence |
+| `<Leader>tb` | `:TTSPrev` | Previous sentence |
+| `<Leader>t]` | | Speed up |
+| `<Leader>t[` | | Speed down |
+
+The current sentence is highlighted and the view scrolls to follow. Set `let g:tts_no_mappings = 1` to disable default mappings and define your own.
 
 ---
 
