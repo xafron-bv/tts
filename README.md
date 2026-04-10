@@ -48,7 +48,7 @@ cd tts-macos
 tts-read --login      # opens NaturalReaders, auto-imports config from extension
 ```
 
-`--login` starts a local server, opens NaturalReaders in your browser — play any voice and the Chrome extension pushes the config automatically. Alternatively, use `--setup` for manual config entry.
+`--login` starts a local server, opens NaturalReaders in your browser — play any voice and the Chrome extension pushes the config automatically. To edit settings manually: `~/.config/tts-reader/config.json`.
 
 Requires Python 3, Homebrew, and `pip3 install numpy sounddevice websockets && brew install portaudio`.
 

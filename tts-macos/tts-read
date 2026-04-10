@@ -3,11 +3,10 @@
 tts-read — Read text aloud using NaturalReaders TTS with streaming & prefetching.
 
 Usage:
+    tts-read --login             Auto-import config from Chrome extension
     tts-read                     Read from clipboard
     tts-read file.txt            Read a file
     echo "hello" | tts-read      Read from stdin
-    pbpaste | tts-read           Read from clipboard via pipe
-    tts-read --setup             Interactive config setup
 
 Keyboard:  Ctrl-C to stop.
 """
@@ -54,7 +53,7 @@ PREFETCH_AHEAD = 2
 
 def load_config():
     if not CONFIG_FILE.exists():
-        print(f"No config found. Run: tts-read --setup", file=sys.stderr)
+        print(f"No config found. Run: tts-read --login", file=sys.stderr)
         sys.exit(1)
     return json.loads(CONFIG_FILE.read_text())
 
@@ -62,38 +61,6 @@ def load_config():
 def save_config(config):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(config, indent=2) + "\n")
-
-
-def run_setup():
-    existing = {}
-    if CONFIG_FILE.exists():
-        existing = json.loads(CONFIG_FILE.read_text())
-        print("Existing config loaded — press Enter to keep current value.\n")
-
-    print("TTS Reader Setup")
-    print("─" * 44)
-
-    def ask(key, label, default=""):
-        cur = existing.get(key, default)
-        display = cur if isinstance(cur, str) else str(cur)
-        val = input(f"  {label} [{display}]: ").strip()
-        return val if val else cur
-
-    config = {
-        "ws_url": ask("ws_url", "WebSocket URL"),
-        "email": ask("email", "Email"),
-        "voice": ask("voice", "Voice", "aoede"),
-        "speed": float(ask("speed", "Speed", 1.5)),
-        "instructions": ask("instructions", "Reading style", "friendly, calm, engaging tone"),
-        "provider": ask("provider", "Provider", "vtx"),
-        "model": ask("model", "Model", "25flash-default"),
-        "gender": ask("gender", "Gender (m/f)", "f"),
-        "language": ask("language", "Language code", "23"),
-        "version": ask("version", "API version", "10.8.26"),
-    }
-
-    save_config(config)
-    print(f"\nSaved to {CONFIG_FILE}")
 
 
 def run_login():
@@ -142,7 +109,7 @@ def run_login():
     print("  Opening NaturalReaders — play any voice to capture settings.")
     print("  (Ctrl-C to cancel)\n")
 
-    webbrowser.open("https://www.naturalreaders.com")
+    webbrowser.open("https://www.naturalreaders.com/online/")
 
     try:
         while not received:
@@ -452,19 +419,14 @@ async def run(text, config, cli_overrides):
 def main():
     parser = argparse.ArgumentParser(
         description="Read text aloud using NaturalReaders TTS.",
-        epilog="Config: ~/.config/tts-reader/config.json  |  Run --setup to configure.",
+        epilog="Config: ~/.config/tts-reader/config.json  |  Run --login to configure.",
     )
     parser.add_argument("file", nargs="?", help="Text file to read (default: clipboard)")
     parser.add_argument("-s", "--speed", type=float, help="Speed multiplier (e.g. 1.5)")
     parser.add_argument("-v", "--voice", help="Voice name (e.g. aoede)")
     parser.add_argument("-i", "--instructions", help="Reading style instructions")
-    parser.add_argument("--setup", action="store_true", help="Interactive config setup")
     parser.add_argument("--login", action="store_true", help="Open NaturalReaders and auto-import config from Chrome extension")
     args = parser.parse_args()
-
-    if args.setup:
-        run_setup()
-        return
 
     if args.login:
         run_login()
