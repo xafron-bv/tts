@@ -293,7 +293,10 @@ def print_progress(idx, sentences):
     n = len(sentences)
     pct = (idx + 1) * 100 // n
     preview = sentences[idx]
-    cols = os.get_terminal_size(fallback=(80, 24)).columns
+    try:
+        cols = os.get_terminal_size().columns
+    except OSError:
+        cols = 80
     max_preview = cols - 22
     if len(preview) > max_preview:
         preview = preview[: max_preview - 1] + "\u2026"
@@ -401,12 +404,15 @@ async def run(text, config, cli_overrides):
             except asyncio.CancelledError:
                 pass
 
-    except websockets.exceptions.InvalidStatusCode as e:
-        sys.stderr.write(f"\n  \033[31mWebSocket rejected ({e}). URL may have expired.\033[0m\n")
     except websockets.exceptions.ConnectionClosed:
         sys.stderr.write(f"\n  \033[31mWebSocket connection closed unexpectedly.\033[0m\n")
     except OSError as e:
         sys.stderr.write(f"\n  \033[31mConnection error: {e}\033[0m\n")
+    except Exception as e:
+        if "websockets" in type(e).__module__:
+            sys.stderr.write(f"\n  \033[31mWebSocket error ({e}). URL may have expired — run: tts-read --login\033[0m\n")
+        else:
+            raise
     finally:
         audio_q.put(None)  # stop sentinel
         audio_thread.join(timeout=30)
