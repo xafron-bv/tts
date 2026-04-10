@@ -110,12 +110,20 @@
   }
 
   // ── Text extraction ────────────────────────────────────────────
-  function extractContent() {
-    const sel = window.getSelection().toString().trim();
-    if (sel.length > 10) return splitText(sel, null);
+  const CONTENT_ROOT_SEL = 'article, main, [role="main"], .post-content, .article-body, .entry-content';
+  const CONTENT_ELS_SEL = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, figcaption, td, dd';
 
-    const root = document.querySelector('article, main, [role="main"], .post-content, .article-body, .entry-content') || document.body;
-    const els = root.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, blockquote, figcaption, td, dd');
+  function extractContent() {
+    const sel = window.getSelection();
+    const selText = sel.toString().trim();
+    if (selText.length > 10) {
+      const selChunks = splitText(selText, null);
+      const restChunks = extractAfterSelection(sel);
+      return [...selChunks, ...restChunks];
+    }
+
+    const root = document.querySelector(CONTENT_ROOT_SEL) || document.body;
+    const els = root.querySelectorAll(CONTENT_ELS_SEL);
     const result = [];
     for (const el of els) {
       const text = el.innerText?.trim();
@@ -151,6 +159,46 @@
         remaining = remaining.slice(i + 1).trim();
       }
       if (remaining) result.push(remaining);
+    }
+    return result;
+  }
+
+  function extractAfterSelection(sel) {
+    if (!sel.rangeCount) return [];
+    const range = sel.getRangeAt(0);
+    const endNode = range.endContainer;
+    const root = document.querySelector(CONTENT_ROOT_SEL) || document.body;
+    const els = root.querySelectorAll(CONTENT_ELS_SEL);
+    const result = [];
+    let pastSelection = false;
+
+    for (const el of els) {
+      if (!pastSelection) {
+        if (el.contains(endNode)) {
+          pastSelection = true;
+          // Extract remaining text in this element after the selection
+          try {
+            const rest = document.createRange();
+            rest.setStart(range.endContainer, range.endOffset);
+            rest.setEndAfter(el.lastChild || el);
+            const remaining = rest.toString().trim();
+            if (remaining.length >= 2) {
+              for (const s of splitSentences(remaining)) {
+                if (s.length >= 2) result.push({ text: s, element: el });
+              }
+            }
+          } catch {}
+          continue;
+        }
+        const pos = endNode.compareDocumentPosition(el);
+        if (!(pos & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+        pastSelection = true;
+      }
+      const text = el.innerText?.trim();
+      if (!text || text.length < 3) continue;
+      for (const s of splitSentences(text)) {
+        if (s.length >= 2) result.push({ text: s, element: el });
+      }
     }
     return result;
   }

@@ -25,9 +25,11 @@ import json
 import base64
 import re
 import argparse
+import signal
 import subprocess
 import threading
 import queue
+import select
 import uuid
 import time
 import termios
@@ -59,6 +61,7 @@ MAX_RETRIES = 4
 BASE_RETRY_DELAY = 0.5  # seconds
 PREFETCH_AHEAD = 2
 SPEEDS = [1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0]
+ACTIVE_TTY_STATE = None
 
 
 def load_config():
@@ -199,11 +202,12 @@ def audio_worker(audio_q, sample_rate, pause_event):
 
 
 def setup_tty():
-    """Put /dev/tty in cbreak mode for single-key reads. Returns (fd, old) or None."""
+    """Put /dev/tty in raw-ish mode for single-key reads. Returns (fd, old) or None."""
     try:
         fd = os.open("/dev/tty", os.O_RDWR)
         old = termios.tcgetattr(fd)
         new = termios.tcgetattr(fd)
+        # Keep ISIG on so Ctrl-C still interrupts immediately.
         new[3] &= ~(termios.ECHO | termios.ICANON)
         new[6][termios.VMIN] = 1
         new[6][termios.VTIME] = 0
@@ -213,38 +217,69 @@ def setup_tty():
         return None
 
 
-def restore_tty(tty_state):
+def restore_tty_mode(tty_state):
     if tty_state:
         fd, old = tty_state
         try:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
-            os.close(fd)
         except OSError:
             pass
 
 
-def key_reader_thread(fd, loop, cmd_q):
-    """Background thread: blocking reads from tty, pushes commands to async queue."""
-    while True:
+def close_tty(tty_state):
+    global ACTIVE_TTY_STATE
+    if tty_state:
+        fd, _ = tty_state
         try:
-            data = os.read(fd, 10)
+            os.close(fd)
+        except OSError:
+            pass
+        if ACTIVE_TTY_STATE == tty_state:
+            ACTIVE_TTY_STATE = None
+
+
+def restore_tty(tty_state):
+    restore_tty_mode(tty_state)
+    close_tty(tty_state)
+
+
+def handle_sigint(*_):
+    restore_tty_mode(ACTIVE_TTY_STATE)
+    try:
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+    finally:
+        os._exit(130)
+
+
+def key_reader_thread(fd, loop, cmd_q, stop_event):
+    """Background thread: polls tty and pushes commands to async queue."""
+    while not stop_event.is_set():
+        try:
+            ready, _, _ = select.select([fd], [], [], 0.1)
+        except (OSError, ValueError):
+            break
+        if not ready:
+            continue
+        try:
+            b = os.read(fd, 1)
         except OSError:
             break
-        if not data:
+        if not b:
             break
         cmd = None
-        if data == b" ":
-            cmd = "toggle_pause"
-        elif data in (b"j", b"\x1b[C"):
-            cmd = "next"
-        elif data in (b"k", b"\x1b[D"):
-            cmd = "prev"
-        elif data == b"]":
-            cmd = "speed_up"
-        elif data == b"[":
-            cmd = "speed_down"
-        elif data in (b"q", b"\x1b"):
+        if b == b"q":
             cmd = "quit"
+        elif b == b" ":
+            cmd = "toggle_pause"
+        elif b == b"j":
+            cmd = "next"
+        elif b == b"k":
+            cmd = "prev"
+        elif b == b"]":
+            cmd = "speed_up"
+        elif b == b"[":
+            cmd = "speed_down"
         if cmd:
             loop.call_soon_threadsafe(cmd_q.put_nowait, cmd)
 
@@ -396,6 +431,7 @@ async def play_sentence(idx, ws, sentences, merged, state, rid_for, audio_q):
 
 
 async def run(text, config, cli_overrides):
+    global ACTIVE_TTY_STATE
     merged = {**config, **{k: v for k, v in cli_overrides.items() if v is not None}}
     sentences = split_sentences(text)
     if not sentences:
@@ -419,6 +455,9 @@ async def run(text, config, cli_overrides):
 
     cmd_q = asyncio.Queue()
     tty_state = setup_tty()
+    ACTIVE_TTY_STATE = tty_state
+    key_stop = None
+    key_thread = None
 
     # Re-read config to get the latest ws_url (the config agent keeps it fresh)
     fresh = load_config()
@@ -426,11 +465,13 @@ async def run(text, config, cli_overrides):
 
     try:
         if tty_state:
-            threading.Thread(
+            key_stop = threading.Event()
+            key_thread = threading.Thread(
                 target=key_reader_thread,
-                args=(tty_state[0], asyncio.get_event_loop(), cmd_q),
+                args=(tty_state[0], asyncio.get_event_loop(), cmd_q, key_stop),
                 daemon=True,
-            ).start()
+            )
+            key_thread.start()
             sys.stderr.write("  space:pause  j/k:next/prev  [/]:speed  q:quit\n")
 
         async with websockets.connect(
@@ -561,7 +602,13 @@ async def run(text, config, cli_overrides):
             raise
     finally:
         if tty_state:
-            restore_tty(tty_state)
+            if key_stop:
+                key_stop.set()
+            restore_tty_mode(tty_state)
+            if key_thread:
+                key_thread.join(timeout=0.3)
+            if not key_thread or not key_thread.is_alive():
+                close_tty(tty_state)
         clear_audio(audio_q, pause_event)
         audio_q.put(None)
         audio_thread.join(timeout=2)
@@ -596,10 +643,9 @@ def main():
         "instructions": args.instructions,
     }
 
-    try:
-        asyncio.run(run(text, config, cli_overrides))
-    except KeyboardInterrupt:
-        sys.stderr.write("\n  Stopped.\n")
+    signal.signal(signal.SIGINT, handle_sigint)
+
+    asyncio.run(run(text, config, cli_overrides))
 
 
 if __name__ == "__main__":

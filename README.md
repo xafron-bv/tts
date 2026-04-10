@@ -68,11 +68,11 @@ tts-read -s 2 -v puck           # 2x speed, different voice
 | Key | Action |
 |-----|--------|
 | Space | Pause / Resume |
-| j / → | Next sentence |
-| k / ← | Previous sentence |
+| j | Next sentence |
+| k | Previous sentence |
 | ] | Speed up |
 | [ | Speed down |
-| q / Esc | Quit |
+| q | Quit |
 
 Controls are available when running in a terminal. When piped from a macOS Shortcut (no terminal), playback runs non-interactively.
 
