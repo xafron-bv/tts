@@ -45,19 +45,36 @@ def strip_markdown(text):
     text = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', text)
     # Links [text](url) → text
     text = re.sub(r'\[([^\]]+)\]\([^)]*\)', r'\1', text)
-    # Header markers
-    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    # Reference-style links [text][ref] → text
+    text = re.sub(r'\[([^\]]+)\]\[[^\]]*\]', r'\1', text)
+    # Footnote definitions
+    text = re.sub(r'^\[\^[^\]]+\]:\s*.*$', '', text, flags=re.MULTILINE)
+    # Footnote references
+    text = re.sub(r'\[\^[^\]]+\]', '', text)
+    # Header markers (with or without space, and trailing #)
+    text = re.sub(r'^#{1,6}\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\s*#{1,6}\s*$', '', text, flags=re.MULTILINE)
     # Horizontal rules
     text = re.sub(r'^\s*[-*_]{3,}\s*$', '', text, flags=re.MULTILINE)
-    # Bold/italic
+    # Bold/italic (order matters: bold first, then italic)
+    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'\1', text)
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'___(.+?)___', r'\1', text)
     text = re.sub(r'__(.+?)__', r'\1', text)
     text = re.sub(r'\*(.+?)\*', r'\1', text)
+    text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'\1', text)
     text = re.sub(r'~~(.+?)~~', r'\1', text)
+    # List markers (unordered and ordered)
+    text = re.sub(r'^[ \t]*[-*+]\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^[ \t]*\d+[.)]\s+', '', text, flags=re.MULTILINE)
     # Blockquote markers
-    text = re.sub(r'^>\s?', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^(?:>\s?)+', '', text, flags=re.MULTILINE)
     # HTML tags
     text = re.sub(r'<[^>]+>', '', text)
+    # Strip any remaining backticks, stray asterisks, underscores used as emphasis
+    text = re.sub(r'`', '', text)
+    text = re.sub(r'(?<!\w)\*+(?!\w)', '', text)
+    text = re.sub(r'(?<!\w)_+(?!\w)', '', text)
     return text
 
 
