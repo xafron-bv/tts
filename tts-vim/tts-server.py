@@ -11,6 +11,11 @@ import uuid
 import re
 from pathlib import Path
 
+import hashlib
+import hmac as hmac_mod
+from datetime import datetime, timezone
+from urllib.parse import quote
+
 import numpy as np
 import sounddevice as sd
 import websockets
@@ -21,6 +26,7 @@ SAMPLE_RATE = 24000
 MAX_RETRIES = 4
 BASE_RETRY_DELAY = 0.5
 PREFETCH_AHEAD = 2
+DEFAULT_WS_BASE = "wss://xujs4waht8.execute-api.us-east-1.amazonaws.com/prod-wpro/"
 
 
 def emit(event, **kwargs):
@@ -76,6 +82,68 @@ def strip_markdown(text):
     text = re.sub(r'(?<!\w)\*+(?!\w)', '', text)
     text = re.sub(r'(?<!\w)_+(?!\w)', '', text)
     return text
+
+
+def sign_wss_url(base_url, creds):
+    """Sign a WebSocket URL using AWS Signature V4."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(base_url)
+    host = parsed.hostname
+    if parsed.port:
+        host += f":{parsed.port}"
+    path = parsed.path or "/"
+    region = "us-east-1"
+    service = "execute-api"
+
+    now = datetime.now(timezone.utc)
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    date_stamp = now.strftime("%Y%m%d")
+    cred_scope = f"{date_stamp}/{region}/{service}/aws4_request"
+
+    qs_params = {
+        "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+        "X-Amz-Credential": f"{creds['access_key']}/{cred_scope}",
+        "X-Amz-Date": amz_date,
+        "X-Amz-SignedHeaders": "host",
+    }
+    if creds.get("session_token"):
+        qs_params["X-Amz-Security-Token"] = creds["session_token"]
+
+    canonical_qs = "&".join(
+        f"{quote(k, safe='')}={quote(v, safe='')}"
+        for k, v in sorted(qs_params.items())
+    )
+
+    canonical_request = "\n".join([
+        "GET", path, canonical_qs,
+        f"host:{host}", "",
+        "host",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    ])
+
+    cr_hash = hashlib.sha256(canonical_request.encode()).hexdigest()
+    string_to_sign = "\n".join(["AWS4-HMAC-SHA256", amz_date, cred_scope, cr_hash])
+
+    def hmac_sha256(key, msg):
+        return hmac_mod.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
+
+    k_date = hmac_sha256(("AWS4" + creds["secret_key"]).encode("utf-8"), date_stamp)
+    k_region = hmac_mod.new(k_date, region.encode(), hashlib.sha256).digest()
+    k_service = hmac_mod.new(k_region, service.encode(), hashlib.sha256).digest()
+    k_signing = hmac_mod.new(k_service, b"aws4_request", hashlib.sha256).digest()
+    sig = hmac_mod.new(k_signing, string_to_sign.encode(), hashlib.sha256).hexdigest()
+
+    return f"wss://{host}{path}?{canonical_qs}&X-Amz-Signature={sig}"
+
+
+def get_ws_url(config):
+    """Get a signed WebSocket URL from config, signing fresh if credentials are available."""
+    creds = config.get("aws_credentials")
+    if creds and creds.get("access_key"):
+        base = config.get("ws_base_url", DEFAULT_WS_BASE)
+        return sign_wss_url(base, creds)
+    return config.get("ws_url", "")
 
 
 def split_sentences(text):
@@ -206,12 +274,16 @@ class TTSServer:
         )
         self.audio_thread.start()
 
-        # Re-read config to get the latest ws_url (the config agent keeps it fresh)
+        # Re-read config to get the latest credentials
         self.config = load_config()
+        ws_url = get_ws_url(self.config)
+        if not ws_url:
+            emit("error", message="No WebSocket URL or credentials configured")
+            return
 
         try:
             async with websockets.connect(
-                self.config["ws_url"],
+                ws_url,
                 origin="https://www.naturalreaders.com",
                 user_agent_header="Mozilla/5.0",
                 close_timeout=5,

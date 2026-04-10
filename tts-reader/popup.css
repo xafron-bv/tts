@@ -27,3 +27,12 @@ input[type="range"] { padding: 0; background: none; border: none; margin-top: 4p
 .btn.primary:hover { background: #3a56d4; }
 .btn.secondary { background: #f0f0f0; color: #444; }
 .btn.secondary:hover { background: #e4e4e4; }
+.btn.small { font-size: 11px; padding: 6px 10px; flex: none; }
+.status.expired { background: #fff3cd; color: #856404; }
+.setup-box {
+  background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 8px;
+  padding: 10px 12px; margin-bottom: 12px; font-size: 12px; color: #555;
+}
+.setup-box p { margin-bottom: 8px; }
+.setup-actions { display: flex; gap: 6px; }
+.setup-actions a { text-decoration: none; text-align: center; }

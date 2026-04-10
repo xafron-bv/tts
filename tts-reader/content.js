@@ -7,6 +7,8 @@
   const PREFETCH_AHEAD = 2;
   const MAX_RETRIES = 4;
   const BASE_RETRY_DELAY = 500; // ms
+  const DEFAULT_WS_BASE = 'wss://xujs4waht8.execute-api.us-east-1.amazonaws.com/prod-wpro/';
+  const EXPIRATION_SKEW_MS = 30000;
 
   // ── State ──────────────────────────────────────────────────────
   let config = null;
@@ -27,17 +29,136 @@
   let highlightStyle = null;
   let onEndTimer = null;
 
+  // ── AWS Sig V4 presigned URL for WebSocket ─────────────────────
+  async function signWssUrl(baseUrl, creds) {
+    const url = new URL(baseUrl);
+    const host = url.host;
+    const path = url.pathname || '/';
+    const region = 'us-east-1';
+    const service = 'execute-api';
+
+    const now = new Date();
+    const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, '');
+    const dateStamp = amzDate.slice(0, 8);
+    const credScope = `${dateStamp}/${region}/${service}/aws4_request`;
+
+    const qsParams = {
+      'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
+      'X-Amz-Credential': `${creds.accessKeyId}/${credScope}`,
+      'X-Amz-Date': amzDate,
+      'X-Amz-SignedHeaders': 'host',
+    };
+    if (creds.sessionToken) {
+      qsParams['X-Amz-Security-Token'] = creds.sessionToken;
+    }
+
+    const canonicalQs = Object.keys(qsParams).sort()
+      .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(qsParams[k]))
+      .join('&');
+
+    const canonicalReq = [
+      'GET', path, canonicalQs,
+      'host:' + host, '',
+      'host',
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    ].join('\n');
+
+    const crHash = await sha256Hex(canonicalReq);
+    const stringToSign = ['AWS4-HMAC-SHA256', amzDate, credScope, crHash].join('\n');
+
+    const enc = s => new TextEncoder().encode(s);
+    const kDate = await hmacSha256(enc('AWS4' + creds.secretAccessKey), enc(dateStamp));
+    const kRegion = await hmacSha256(kDate, enc(region));
+    const kService = await hmacSha256(kRegion, enc(service));
+    const kSigning = await hmacSha256(kService, enc('aws4_request'));
+    const sig = bufToHex(await hmacSha256(kSigning, enc(stringToSign)));
+
+    return `wss://${host}${path}?${canonicalQs}&X-Amz-Signature=${sig}`;
+  }
+
+  async function hmacSha256(key, data) {
+    const k = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    return new Uint8Array(await crypto.subtle.sign('HMAC', k, data));
+  }
+
+  async function sha256Hex(str) {
+    const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+    return bufToHex(new Uint8Array(h));
+  }
+
+  function bufToHex(buf) {
+    return Array.from(buf, b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  function parseExpirationMs(expiration) {
+    if (!expiration) return null;
+    if (typeof expiration === 'number' && Number.isFinite(expiration)) {
+      return expiration > 1e12 ? expiration : expiration * 1000;
+    }
+    const parsed = Date.parse(expiration);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+
+  function credsValid(creds) {
+    if (!creds?.accessKeyId) return false;
+    const expirationMs = parseExpirationMs(creds.expiration);
+    if (expirationMs === null) return !creds.expiration;
+    return Date.now() + EXPIRATION_SKEW_MS < expirationMs;
+  }
+
+  async function ensureConnectionData() {
+    let data = await chrome.storage.local.get(['awsCredentials', 'wsBaseUrl', 'wsUrl', 'ttsSettings']);
+
+    if (!credsValid(data.awsCredentials)) {
+      try {
+        const resp = await chrome.runtime.sendMessage({ type: 'REFRESH_CREDENTIALS' });
+        if (resp?.ok) {
+          data = await chrome.storage.local.get(['awsCredentials', 'wsBaseUrl', 'wsUrl', 'ttsSettings']);
+        }
+      } catch {}
+    }
+
+    return data;
+  }
+
+  async function getSignedWsUrl() {
+    const data = await ensureConnectionData();
+
+    if (credsValid(data.awsCredentials)) {
+      const base = data.wsBaseUrl || DEFAULT_WS_BASE;
+      return signWssUrl(base, data.awsCredentials);
+    }
+    return data.wsUrl || null; // fallback to captured signed URL
+  }
+
   // ── Capture bridge (naturalreaders.com) ────────────────────────
   if (location.hostname === 'www.naturalreaders.com') {
     window.addEventListener('message', (e) => {
       if (e.data?.type === 'TTS_READER_WS_CAPTURED') {
-        chrome.storage.local.set({ wsUrl: e.data.url });
-        // Push fresh URL to CLI config agent immediately
+        chrome.storage.local.set({
+          wsUrl: e.data.url,
+          wsBaseUrl: e.data.baseUrl,
+        });
         chrome.storage.local.get('ttsSettings', (d) => {
           chrome.runtime.sendMessage({
             type: 'PUSH_TO_CLI',
             config: { ws_url: e.data.url, ...(d.ttsSettings || {}) },
           });
+        });
+      }
+      if (e.data?.type === 'TTS_READER_CREDENTIALS_CAPTURED') {
+        chrome.storage.local.set({ awsCredentials: e.data.credentials });
+        // Sign a fresh URL and push to CLI
+        chrome.storage.local.get(['wsBaseUrl', 'ttsSettings'], async (d) => {
+          const base = d.wsBaseUrl || DEFAULT_WS_BASE;
+          try {
+            const signedUrl = await signWssUrl(base, e.data.credentials);
+            chrome.storage.local.set({ wsUrl: signedUrl });
+            chrome.runtime.sendMessage({
+              type: 'PUSH_TO_CLI',
+              config: { ws_url: signedUrl, ...(d.ttsSettings || {}) },
+            });
+          } catch {}
         });
       }
       if (e.data?.type === 'TTS_READER_SETTINGS_CAPTURED') {
@@ -54,12 +175,15 @@
           version: s.version,
         };
         chrome.storage.local.set({ ttsSettings: settings });
-        // Push full config to CLI config agent
-        chrome.storage.local.get('wsUrl', (d) => {
-          if (d.wsUrl) {
+        chrome.storage.local.get(['wsUrl', 'awsCredentials', 'wsBaseUrl'], async (d) => {
+          let wsUrl = d.wsUrl;
+          if (!wsUrl && d.awsCredentials) {
+            try { wsUrl = await signWssUrl(d.wsBaseUrl || DEFAULT_WS_BASE, d.awsCredentials); } catch {}
+          }
+          if (wsUrl) {
             chrome.runtime.sendMessage({
               type: 'PUSH_TO_CLI',
-              config: { ws_url: d.wsUrl, ...settings },
+              config: { ws_url: wsUrl, ...settings },
             });
           }
         });
@@ -69,14 +193,33 @@
 
   // ── Message listener ───────────────────────────────────────────
   chrome.runtime.onMessage.addListener((msg) => {
-    if (msg.type === 'START_READER') activate(msg.settings);
+    if (msg.type === 'START_READER') startReader(msg.settings);
     if (msg.type === 'TOGGLE_READER') {
       if (playerHost) { playing ? pause() : resume(); }
-      else chrome.storage.local.get(['ttsSettings', 'wsUrl'], (d) => {
-        if (d.wsUrl) activate({ ...d.ttsSettings, wsUrl: d.wsUrl });
-      });
+      else startReader();
     }
   });
+
+  async function startReader(settings) {
+    const data = await ensureConnectionData();
+    if (credsValid(data.awsCredentials) || data.wsUrl) {
+      activate({ ...(data.ttsSettings || {}), ...(settings || {}) });
+      return;
+    }
+    showNotConnectedHint();
+  }
+
+  function showNotConnectedHint() {
+    const hint = document.createElement('div');
+    hint.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);' +
+      'background:#1a1a2e;color:#e0e0e0;padding:12px 24px;border-radius:10px;' +
+      'font:13px -apple-system,system-ui,sans-serif;z-index:2147483647;' +
+      'box-shadow:0 4px 16px rgba(0,0,0,0.4);max-width:420px;text-align:center;';
+    hint.innerHTML = 'TTS Reader: Could not refresh NaturalReader session.<br><span style="font-size:11px;color:#999;">' +
+      'Sign in at <b>naturalreaders.com</b> if this keeps happening.</span>';
+    document.body.appendChild(hint);
+    setTimeout(() => hint.remove(), 5000);
+  }
 
   // ── Activate ───────────────────────────────────────────────────
   function activate(settings) {
@@ -204,10 +347,17 @@
   }
 
   // ── WebSocket ──────────────────────────────────────────────────
-  function connectWS() {
+  async function connectWS() {
+    if (ws?.readyState === WebSocket.OPEN) return;
+
+    // Sign a fresh URL each time we connect
+    let url = await getSignedWsUrl();
+    if (!url) {
+      throw new Error('Not signed in. Install NaturalReader extension and sign in.');
+    }
+
     return new Promise((resolve, reject) => {
-      if (ws?.readyState === WebSocket.OPEN) { resolve(); return; }
-      ws = new WebSocket(config.wsUrl);
+      ws = new WebSocket(url);
       ws.onopen = () => { wsReconnecting = false; resolve(); };
       ws.onerror = () => reject(new Error('WebSocket error'));
       ws.onclose = () => {
@@ -215,7 +365,7 @@
         if (playing && !wsReconnecting) {
           wsReconnecting = true;
           showError('Connection lost. Reconnecting...');
-          setTimeout(() => connectWS().then(() => clearError()).catch(() => showError('Reconnect failed. Refresh WebSocket URL.')), 2000);
+          setTimeout(() => connectWS().then(() => clearError()).catch(() => showError('Reconnect failed. Retrying...')), 2000);
         }
       };
       ws.onmessage = (e) => {
@@ -391,8 +541,8 @@
     try {
       await connectWS();
       playSentence(0);
-    } catch {
-      showError('Failed to connect. Check WebSocket URL.');
+    } catch (err) {
+      showError(err?.message || 'Failed to connect. Check NaturalReader extension.');
     }
   }
 
