@@ -78,11 +78,11 @@ def run_login():
     # Check that the config agent is running
     try:
         urllib.request.urlopen("http://127.0.0.1:18412/config", timeout=1)
+    except urllib.error.HTTPError:
+        pass  # Any HTTP response (501, 404, etc.) means it's listening
     except urllib.error.URLError:
         print("Config agent is not running. Run: bash install.sh", file=sys.stderr)
         sys.exit(1)
-    except Exception:
-        pass  # 404/405 is fine — means it's listening
 
     print("  Opening NaturalReaders — play any voice to capture settings.")
     print("  The config agent will save settings automatically.\n")
