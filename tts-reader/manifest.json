@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "TTS Reader",
+  "version": "1.0",
+  "description": "Read any webpage aloud with natural TTS voices and prefetching",
+  "permissions": ["storage", "activeTab"],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.naturalreaders.com/*"],
+      "js": ["capture.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "commands": {
+    "toggle-reader": {
+      "suggested_key": { "default": "Alt+R" },
+      "description": "Toggle TTS Reader"
+    }
+  }
+}

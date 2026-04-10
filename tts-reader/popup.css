@@ -1,0 +1,29 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { width: 340px; padding: 16px; font-family: -apple-system, system-ui, sans-serif; font-size: 13px; color: #1a1a2e; }
+.header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+h1 { font-size: 16px; font-weight: 600; }
+.status { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: #f0f0f0; color: #666; }
+.status.connected { background: #d4edda; color: #155724; }
+.field { margin-bottom: 12px; }
+.field label { display: block; font-weight: 500; margin-bottom: 4px; font-size: 12px; color: #444; }
+.field small { display: block; margin-top: 3px; color: #888; font-size: 11px; }
+.field small a { color: #4361ee; }
+input, textarea, select {
+  width: 100%; padding: 7px 10px; border: 1px solid #ddd; border-radius: 6px;
+  font-size: 13px; font-family: inherit; background: #fafafa;
+  transition: border-color 0.15s;
+}
+input:focus, textarea:focus, select:focus { outline: none; border-color: #4361ee; background: #fff; }
+textarea { resize: vertical; }
+input[type="range"] { padding: 0; background: none; border: none; margin-top: 4px; }
+.row { display: flex; gap: 12px; }
+.flex1 { flex: 1; }
+.actions { display: flex; gap: 8px; margin-top: 16px; }
+.btn {
+  flex: 1; padding: 9px 12px; border: none; border-radius: 8px; font-size: 13px;
+  font-weight: 600; cursor: pointer; transition: all 0.15s;
+}
+.btn.primary { background: #4361ee; color: #fff; }
+.btn.primary:hover { background: #3a56d4; }
+.btn.secondary { background: #f0f0f0; color: #444; }
+.btn.secondary:hover { background: #e4e4e4; }
