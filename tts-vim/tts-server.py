@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 import websockets
+import websockets.exceptions
 
 CONFIG_FILE = Path.home() / ".config" / "tts-reader" / "config.json"
 SAMPLE_RATE = 24000

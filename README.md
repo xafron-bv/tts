@@ -63,14 +63,20 @@ echo "hello" | tts-read         # pipe text
 tts-read -s 2 -v puck           # 2x speed, different voice
 ```
 
+### Keyboard controls
+
+| Key | Action |
+|-----|--------|
+| Space | Pause / Resume |
+| j / → | Next sentence |
+| k / ← | Previous sentence |
+| ] | Speed up |
+| [ | Speed down |
+| q / Esc | Quit |
+
+Controls are available when running in a terminal. When piped from a macOS Shortcut (no terminal), playback runs non-interactively.
+
 ### Global shortcut
-
-**skhd** — add to `~/.skhdrc`:
-```
-alt - r : pbpaste | ~/.local/bin/tts-read
-```
-
-**macOS Shortcuts** (no extra tools needed):
 
 1. Open **Shortcuts.app** → click **+** to create a new shortcut
 2. Name it something like "Read Clipboard Aloud"
