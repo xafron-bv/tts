@@ -3,6 +3,15 @@ set -e
 
 echo "Uninstalling tts-read..."
 
+# Stop and remove config agent
+AGENT_LABEL="com.tts-reader.config-agent"
+PLIST="$HOME/Library/LaunchAgents/${AGENT_LABEL}.plist"
+launchctl bootout "gui/$(id -u)/${AGENT_LABEL}" 2>/dev/null || true
+if [ -f "$PLIST" ]; then
+  rm "$PLIST"
+  echo "  Removed config agent"
+fi
+
 # Remove symlink
 LINK="$HOME/.local/bin/tts-read"
 if [ -L "$LINK" ]; then

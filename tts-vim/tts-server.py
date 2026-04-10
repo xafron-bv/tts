@@ -161,6 +161,9 @@ class TTSServer:
         )
         self.audio_thread.start()
 
+        # Re-read config to get the latest ws_url (the config agent keeps it fresh)
+        self.config = load_config()
+
         try:
             async with websockets.connect(
                 self.config["ws_url"],

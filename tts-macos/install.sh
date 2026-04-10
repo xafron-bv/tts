@@ -44,5 +44,39 @@ if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
   echo "Run: source $RC   (or open a new terminal)"
 fi
 
+# ── Config agent (receives fresh WebSocket URLs from Chrome extension) ──
+AGENT_LABEL="com.tts-reader.config-agent"
+PLIST="$HOME/Library/LaunchAgents/${AGENT_LABEL}.plist"
+AGENT_SCRIPT="$(cd "$(dirname "$0")" && pwd)/tts-config-agent"
+
+# Stop old agent if running
+launchctl bootout "gui/$(id -u)/${AGENT_LABEL}" 2>/dev/null || true
+
+cat > "$PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${AGENT_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${VENV_DIR}/bin/python3</string>
+    <string>${AGENT_SCRIPT}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardErrorPath</key>
+  <string>/tmp/tts-config-agent.log</string>
+</dict>
+</plist>
+PLIST
+
+launchctl bootstrap "gui/$(id -u)" "$PLIST"
+echo "Config agent installed and running."
+
 echo ""
 echo "Done! Run: tts-read --login"

@@ -71,72 +71,39 @@ def save_config(config):
 
 
 def run_login():
-    """Start a local server, open NaturalReaders, wait for the extension to push config."""
+    """Open NaturalReaders and wait for the config agent to receive config from the extension."""
     import webbrowser
-    from http.server import HTTPServer, BaseHTTPRequestHandler
+    import urllib.request
 
-    received = {}
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):
-            if self.path != "/config":
-                self.send_response(404)
-                self.end_headers()
-                return
-            length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length)
-            try:
-                received.update(json.loads(body))
-            except json.JSONDecodeError:
-                pass
-            self.send_response(200)
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(b"OK")
-
-        def do_OPTIONS(self):
-            self.send_response(200)
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
-            self.end_headers()
-
-        def log_message(self, *_):
-            pass
-
+    # Check that the config agent is running
     try:
-        server = HTTPServer(("127.0.0.1", 18412), Handler)
-    except OSError:
-        print("Port 18412 is already in use. Is another --login running?", file=sys.stderr)
+        urllib.request.urlopen("http://127.0.0.1:18412/config", timeout=1)
+    except urllib.error.URLError:
+        print("Config agent is not running. Run: bash install.sh", file=sys.stderr)
         sys.exit(1)
+    except Exception:
+        pass  # 404/405 is fine — means it's listening
 
-    server.timeout = 1
-
-    print("  Waiting for config from Chrome extension...")
     print("  Opening NaturalReaders — play any voice to capture settings.")
-    print("  (Ctrl-C to cancel)\n")
+    print("  The config agent will save settings automatically.\n")
 
     webbrowser.open("https://www.naturalreaders.com/online/")
 
+    # Poll until config appears or is updated
+    before = CONFIG_FILE.stat().st_mtime if CONFIG_FILE.exists() else 0
+
+    print("  Waiting for config from Chrome extension... (Ctrl-C to cancel)")
     try:
-        while not received:
-            server.handle_request()
+        while True:
+            time.sleep(1)
+            if CONFIG_FILE.exists() and CONFIG_FILE.stat().st_mtime > before:
+                break
     except KeyboardInterrupt:
         print("\n  Cancelled.")
-        server.server_close()
         return
 
-    server.server_close()
-
-    # Merge with existing config
-    existing = {}
-    if CONFIG_FILE.exists():
-        existing = json.loads(CONFIG_FILE.read_text())
-
-    config = {**existing, **received}
-    save_config(config)
-
-    print(f"  \033[32mConfig received and saved to {CONFIG_FILE}\033[0m")
+    config = json.loads(CONFIG_FILE.read_text())
+    print(f"\n  \033[32mConfig received and saved to {CONFIG_FILE}\033[0m")
     print(f"  Voice: {config.get('voice')}  Speed: {config.get('speed')}  Email: {config.get('email')}")
     print(f"\n  Ready! Run: tts-read")
 
@@ -329,6 +296,10 @@ async def run(text, config, cli_overrides):
         target=audio_worker, args=(audio_q, SAMPLE_RATE), daemon=True
     )
     audio_thread.start()
+
+    # Re-read config to get the latest ws_url (the config agent keeps it fresh)
+    fresh = load_config()
+    merged["ws_url"] = fresh.get("ws_url", merged.get("ws_url"))
 
     try:
         async with websockets.connect(

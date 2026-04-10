@@ -32,6 +32,13 @@
     window.addEventListener('message', (e) => {
       if (e.data?.type === 'TTS_READER_WS_CAPTURED') {
         chrome.storage.local.set({ wsUrl: e.data.url });
+        // Push fresh URL to CLI config agent immediately
+        chrome.storage.local.get('ttsSettings', (d) => {
+          chrome.runtime.sendMessage({
+            type: 'PUSH_TO_CLI',
+            config: { ws_url: e.data.url, ...(d.ttsSettings || {}) },
+          });
+        });
       }
       if (e.data?.type === 'TTS_READER_SETTINGS_CAPTURED') {
         const s = e.data.settings;
@@ -47,7 +54,7 @@
           version: s.version,
         };
         chrome.storage.local.set({ ttsSettings: settings });
-        // Push to CLI server via background (which has host_permissions for localhost)
+        // Push full config to CLI config agent
         chrome.storage.local.get('wsUrl', (d) => {
           if (d.wsUrl) {
             chrome.runtime.sendMessage({

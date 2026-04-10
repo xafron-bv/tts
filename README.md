@@ -2,7 +2,7 @@
 
 Read any text aloud using NaturalReaders' HD Pro voices. Streams audio with sentence prefetching for near-zero gaps. Retries on failure with exponential backoff.
 
-Requires a [NaturalReaders](https://www.naturalreaders.com) account.
+Requires a [NaturalReaders](https://www.naturalreaders.com) account and the Chrome extension to stay authenticated.
 
 ## Chrome Extension (`tts-reader/`)
 
@@ -44,13 +44,15 @@ Read text from clipboard, files, or stdin. Works great with vim and terminal wor
 
 ```bash
 cd tts-macos
-./install.sh          # installs deps, symlinks tts-read to ~/.local/bin
+./install.sh          # installs deps, config agent, symlinks tts-read to ~/.local/bin
 tts-read --login      # opens NaturalReaders, auto-imports config from extension
 ```
 
-`--login` starts a local server, opens NaturalReaders in your browser — play any voice and the Chrome extension pushes the config automatically. To edit settings manually: `~/.config/tts-reader/config.json`.
+`install.sh` creates a Python venv at `~/.local/share/tts-reader/venv/`, installs a background config agent as a launchd service, and symlinks `tts-read` to `~/.local/bin`.
 
-Requires Python 3, Homebrew, and `pip3 install numpy sounddevice websockets && brew install portaudio`.
+`--login` opens NaturalReaders in your browser — play any voice and the Chrome extension pushes the config automatically. To edit settings manually: `~/.config/tts-reader/config.json`.
+
+Requires Python 3 and Homebrew (for portaudio).
 
 ### Use
 
@@ -93,7 +95,7 @@ Read text aloud from inside vim with sentence highlighting and playback controls
 
 **vim-plug:**
 ```vim
-Plug 'xafron-bv/tts', { 'rtp': 'tts-vim', 'do': 'pip3 install --user numpy sounddevice websockets' }
+Plug 'xafron-bv/tts', { 'rtp': 'tts-vim' }
 ```
 Then `:PlugInstall`.
 
@@ -106,29 +108,34 @@ ln -s ~/devel/tts/tts-vim ~/.vim/pack/tts/start/tts-vim
 ln -s ~/devel/tts/tts-vim ~/.local/share/nvim/site/pack/tts/start/tts-vim
 ```
 
-Same Python dependencies as the CLI (`pip3 install numpy sounddevice websockets && brew install portaudio`). Uses the same config at `~/.config/tts-reader/config.json` — run `tts-read --login` first if you haven't.
+Uses the same venv and config as the CLI — install the macOS CLI first (`./install.sh` + `tts-read --login`).
 
 ### Controls
 
 | Mapping | Command | Action |
 |---------|---------|--------|
-| `<Leader>tr` | `:TTSPlay` | Read buffer (or visual selection) |
-| `<Leader>tf` | `:.,$TTSPlay` | Read from current line to end |
+| `<Leader>tt` | `:TTSPlay` | Read buffer (or visual selection) |
+| `<Leader>tg` | `:.,$TTSPlay` | Read from current line to end |
 | `<Leader>tp` | `:TTSPause` | Toggle pause / resume |
-| `<Leader>tn` | `:TTSNext` | Next sentence |
-| `<Leader>tb` | `:TTSPrev` | Previous sentence |
+| `<Leader>tj` | `:TTSNext` | Next sentence |
+| `<Leader>tk` | `:TTSPrev` | Previous sentence |
 | `<Leader>t]` | | Speed up |
 | `<Leader>t[` | | Speed down |
-| `<Leader>ts` | `:TTSStop` | Stop |
+| `<Leader>tq` | `:TTSStop` | Stop |
 
 The current sentence is highlighted and the view scrolls to follow. Set `let g:tts_no_mappings = 1` to disable default mappings and define your own.
 
 ---
 
-## Config
+## How authentication works
 
-The Chrome extension stores settings in `chrome.storage.local` (auto-captured from naturalreaders.com). The CLI stores settings at `~/.config/tts-reader/config.json`.
+NaturalReaders uses a signed WebSocket URL with temporary AWS credentials that expire after a few hours. The Chrome extension is required to keep the CLI and vim plugin authenticated.
 
-Use `tts-read --login` to auto-import config from the Chrome extension — no manual copy-pasting needed.
+When you visit naturalreaders.com, the extension intercepts the fresh WebSocket URL and pushes it to a local config agent (`localhost:18412`). The agent writes it to `~/.config/tts-reader/config.json`. The CLI and vim plugin re-read this file before each connection, so they always use the latest URL.
 
-The WebSocket URL contains temporary AWS credentials that expire. When connections start failing, run `tts-read --login` again (or revisit naturalreaders.com) to refresh.
+This means authentication stays fresh automatically as long as:
+1. The Chrome extension is installed
+2. You visit naturalreaders.com occasionally (the URL refreshes on each visit)
+3. The config agent is running (`install.sh` sets it up as a launchd service)
+
+If connections start failing with a 403, just open naturalreaders.com in Chrome — the extension will push a fresh URL to the config agent within seconds. Run `tts-read --login` for first-time setup.
