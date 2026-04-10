@@ -35,18 +35,26 @@
       }
       if (e.data?.type === 'TTS_READER_SETTINGS_CAPTURED') {
         const s = e.data.settings;
-        chrome.storage.local.set({
-          ttsSettings: {
-            email: s.email,
-            voice: s.voice,
-            speed: s.speed,
-            instructions: s.instructions,
-            provider: s.provider,
-            model: s.model,
-            gender: s.gender,
-            language: s.language,
-            version: s.version,
-          },
+        const settings = {
+          email: s.email,
+          voice: s.voice,
+          speed: s.speed,
+          instructions: s.instructions,
+          provider: s.provider,
+          model: s.model,
+          gender: s.gender,
+          language: s.language,
+          version: s.version,
+        };
+        chrome.storage.local.set({ ttsSettings: settings });
+        // Push to CLI server via background (which has host_permissions for localhost)
+        chrome.storage.local.get('wsUrl', (d) => {
+          if (d.wsUrl) {
+            chrome.runtime.sendMessage({
+              type: 'PUSH_TO_CLI',
+              config: { ws_url: d.wsUrl, ...settings },
+            });
+          }
         });
       }
     });

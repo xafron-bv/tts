@@ -6,3 +6,14 @@ chrome.commands.onCommand.addListener(async (command) => {
     }
   }
 });
+
+// Push captured config to CLI local server (if running)
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type === 'PUSH_TO_CLI' && msg.config) {
+    fetch('http://localhost:18412/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(msg.config),
+    }).catch(() => {}); // silent if CLI server not running
+  }
+});

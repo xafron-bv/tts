@@ -96,6 +96,77 @@ def run_setup():
     print(f"\nSaved to {CONFIG_FILE}")
 
 
+def run_login():
+    """Start a local server, open NaturalReaders, wait for the extension to push config."""
+    import webbrowser
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    received = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            if self.path != "/config":
+                self.send_response(404)
+                self.end_headers()
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            try:
+                received.update(json.loads(body))
+            except json.JSONDecodeError:
+                pass
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(b"OK")
+
+        def do_OPTIONS(self):
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.end_headers()
+
+        def log_message(self, *_):
+            pass
+
+    try:
+        server = HTTPServer(("127.0.0.1", 18412), Handler)
+    except OSError:
+        print("Port 18412 is already in use. Is another --login running?", file=sys.stderr)
+        sys.exit(1)
+
+    server.timeout = 1
+
+    print("  Waiting for config from Chrome extension...")
+    print("  Opening NaturalReaders — play any voice to capture settings.")
+    print("  (Ctrl-C to cancel)\n")
+
+    webbrowser.open("https://www.naturalreaders.com")
+
+    try:
+        while not received:
+            server.handle_request()
+    except KeyboardInterrupt:
+        print("\n  Cancelled.")
+        server.server_close()
+        return
+
+    server.server_close()
+
+    # Merge with existing config
+    existing = {}
+    if CONFIG_FILE.exists():
+        existing = json.loads(CONFIG_FILE.read_text())
+
+    config = {**existing, **received}
+    save_config(config)
+
+    print(f"  \033[32mConfig received and saved to {CONFIG_FILE}\033[0m")
+    print(f"  Voice: {config.get('voice')}  Speed: {config.get('speed')}  Email: {config.get('email')}")
+    print(f"\n  Ready! Run: tts-read")
+
+
 # ── Text handling ─────────────────────────────────────────────────────────────
 
 
@@ -388,10 +459,15 @@ def main():
     parser.add_argument("-v", "--voice", help="Voice name (e.g. aoede)")
     parser.add_argument("-i", "--instructions", help="Reading style instructions")
     parser.add_argument("--setup", action="store_true", help="Interactive config setup")
+    parser.add_argument("--login", action="store_true", help="Open NaturalReaders and auto-import config from Chrome extension")
     args = parser.parse_args()
 
     if args.setup:
         run_setup()
+        return
+
+    if args.login:
+        run_login()
         return
 
     config = load_config()

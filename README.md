@@ -44,9 +44,11 @@ Read text from clipboard, files, or stdin. Works great with vim and terminal wor
 
 ```bash
 cd tts-macos
-./install.sh          # installs deps, symlinks tts-read to /usr/local/bin
-tts-read --setup      # interactive config (paste WebSocket URL from extension popup)
+./install.sh          # installs deps, symlinks tts-read to ~/.local/bin
+tts-read --login      # opens NaturalReaders, auto-imports config from extension
 ```
+
+`--login` starts a local server, opens NaturalReaders in your browser — play any voice and the Chrome extension pushes the config automatically. Alternatively, use `--setup` for manual config entry.
 
 Requires Python 3, Homebrew, and `pip3 install numpy sounddevice websockets && brew install portaudio`.
 
@@ -74,15 +76,17 @@ nnoremap <leader>r :w !tts-read<CR>
 
 **skhd** — add to `~/.skhdrc`:
 ```
-alt - r : pbpaste | /usr/local/bin/tts-read
+alt - r : pbpaste | ~/.local/bin/tts-read
 ```
 
-**macOS Shortcuts** — create a shortcut running `pbpaste | /usr/local/bin/tts-read`, assign a key in System Settings → Keyboard → Shortcuts → Services.
+**macOS Shortcuts** — create a shortcut running `pbpaste | ~/.local/bin/tts-read`, assign a key in System Settings → Keyboard → Shortcuts → Services.
 
 ---
 
 ## Config
 
-The Chrome extension stores settings in `chrome.storage.local` (auto-captured from naturalreaders.com). The CLI stores settings at `~/.config/tts-reader/config.json` (run `tts-read --setup`). Copy the WebSocket URL from the extension popup into the CLI config.
+The Chrome extension stores settings in `chrome.storage.local` (auto-captured from naturalreaders.com). The CLI stores settings at `~/.config/tts-reader/config.json`.
 
-The WebSocket URL contains temporary AWS credentials that expire. When connections start failing, revisit naturalreaders.com and play a voice to refresh it.
+Use `tts-read --login` to auto-import config from the Chrome extension — no manual copy-pasting needed.
+
+The WebSocket URL contains temporary AWS credentials that expire. When connections start failing, run `tts-read --login` again (or revisit naturalreaders.com) to refresh.

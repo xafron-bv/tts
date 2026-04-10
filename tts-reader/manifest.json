@@ -4,6 +4,7 @@
   "version": "1.0",
   "description": "Read any webpage aloud with natural TTS voices and prefetching",
   "permissions": ["storage", "activeTab"],
+  "host_permissions": ["http://localhost/*"],
   "action": {
     "default_popup": "popup.html"
   },
