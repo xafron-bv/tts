@@ -1,0 +1,413 @@
+#!/usr/bin/env python3
+"""
+tts-read — Read text aloud using NaturalReaders TTS with streaming & prefetching.
+
+Usage:
+    tts-read                     Read from clipboard
+    tts-read file.txt            Read a file
+    echo "hello" | tts-read      Read from stdin
+    pbpaste | tts-read           Read from clipboard via pipe
+    tts-read --setup             Interactive config setup
+
+Keyboard:  Ctrl-C to stop.
+"""
+
+import asyncio
+import json
+import base64
+import sys
+import os
+import re
+import argparse
+import subprocess
+import threading
+import queue
+import uuid
+import time
+from pathlib import Path
+
+try:
+    import numpy as np
+except ImportError:
+    print("Missing: numpy. Run: pip3 install numpy", file=sys.stderr)
+    sys.exit(1)
+try:
+    import sounddevice as sd
+except ImportError:
+    print("Missing: sounddevice. Run: pip3 install sounddevice && brew install portaudio", file=sys.stderr)
+    sys.exit(1)
+try:
+    import websockets
+except ImportError:
+    print("Missing: websockets. Run: pip3 install websockets", file=sys.stderr)
+    sys.exit(1)
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
+CONFIG_DIR = Path.home() / ".config" / "tts-reader"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+SAMPLE_RATE = 24000
+MAX_RETRIES = 4
+BASE_RETRY_DELAY = 0.5  # seconds
+PREFETCH_AHEAD = 2
+
+
+def load_config():
+    if not CONFIG_FILE.exists():
+        print(f"No config found. Run: tts-read --setup", file=sys.stderr)
+        sys.exit(1)
+    return json.loads(CONFIG_FILE.read_text())
+
+
+def save_config(config):
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.write_text(json.dumps(config, indent=2) + "\n")
+
+
+def run_setup():
+    existing = {}
+    if CONFIG_FILE.exists():
+        existing = json.loads(CONFIG_FILE.read_text())
+        print("Existing config loaded — press Enter to keep current value.\n")
+
+    print("TTS Reader Setup")
+    print("─" * 44)
+
+    def ask(key, label, default=""):
+        cur = existing.get(key, default)
+        display = cur if isinstance(cur, str) else str(cur)
+        val = input(f"  {label} [{display}]: ").strip()
+        return val if val else cur
+
+    config = {
+        "ws_url": ask("ws_url", "WebSocket URL"),
+        "email": ask("email", "Email"),
+        "voice": ask("voice", "Voice", "aoede"),
+        "speed": float(ask("speed", "Speed", 1.5)),
+        "instructions": ask("instructions", "Reading style", "friendly, calm, engaging tone"),
+        "provider": ask("provider", "Provider", "vtx"),
+        "model": ask("model", "Model", "25flash-default"),
+        "gender": ask("gender", "Gender (m/f)", "f"),
+        "language": ask("language", "Language code", "23"),
+        "version": ask("version", "API version", "10.8.26"),
+    }
+
+    save_config(config)
+    print(f"\nSaved to {CONFIG_FILE}")
+
+
+# ── Text handling ─────────────────────────────────────────────────────────────
+
+
+def get_text(args):
+    if args.file:
+        p = Path(args.file)
+        if not p.exists():
+            print(f"File not found: {args.file}", file=sys.stderr)
+            sys.exit(1)
+        return p.read_text()
+
+    if not sys.stdin.isatty():
+        return sys.stdin.read()
+
+    # Default: clipboard
+    try:
+        text = subprocess.check_output(["pbpaste"], text=True, stderr=subprocess.DEVNULL)
+        if text.strip():
+            return text
+    except Exception:
+        pass
+
+    print("No text. Pipe text, pass a file, or copy something to clipboard.", file=sys.stderr)
+    sys.exit(1)
+
+
+def split_sentences(text):
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return []
+
+    raw = re.findall(r'[^.!?]+(?:[.!?]+["\'\u201D\u2019)}\]]*\s*|$)', text)
+    result = []
+    for s in raw:
+        t = s.strip()
+        if not t:
+            continue
+        if len(t) <= 600:
+            result.append(t)
+            continue
+        # Split long sentences on commas / semicolons
+        remaining = t
+        while len(remaining) > 600:
+            i = remaining.rfind(", ", 0, 600)
+            if i < 200:
+                i = remaining.rfind("; ", 0, 600)
+            if i < 200:
+                i = remaining.rfind(" ", 0, 600)
+            if i < 100:
+                i = 600
+            result.append(remaining[: i + 1].strip())
+            remaining = remaining[i + 1 :].strip()
+        if remaining:
+            result.append(remaining)
+
+    return [s for s in result if len(s) >= 2]
+
+
+# ── Audio ─────────────────────────────────────────────────────────────────────
+
+
+def base64_to_pcm(b64_data):
+    raw = base64.b64decode(b64_data)
+    int16 = np.frombuffer(raw, dtype=np.int16)
+    return (int16.astype(np.float32) / 32768.0).reshape(-1, 1)
+
+
+def audio_worker(audio_q, sample_rate):
+    """Runs in a thread. Reads PCM numpy arrays from queue and plays them."""
+    try:
+        stream = sd.OutputStream(samplerate=sample_rate, channels=1, dtype="float32")
+        stream.start()
+        while True:
+            item = audio_q.get()
+            if item is None:
+                break
+            stream.write(item)
+        stream.stop()
+        stream.close()
+    except Exception as e:
+        print(f"\nAudio error: {e}", file=sys.stderr)
+
+
+# ── TTS WebSocket ─────────────────────────────────────────────────────────────
+
+
+async def send_tts(ws, idx, sentences, config, state, rid_for):
+    rid = "tts-stream-" + str(uuid.uuid4())
+    state[rid] = {"chunks": [], "done": False, "error": None, "event": asyncio.Event()}
+    rid_for[idx] = rid
+
+    await ws.send(
+        json.dumps(
+            {
+                "e": config.get("email", ""),
+                "l": config.get("language", "23"),
+                "rn": config.get("voice", "aoede"),
+                "s": round(config.get("speed", 1.5) * 180),
+                "v": config.get("provider", "vtx"),
+                "vn": config.get("version", "10.8.26"),
+                "sm": "true",
+                "ins": (
+                    ("Reading Style:\n" + config["instructions"])
+                    if config.get("instructions")
+                    else ""
+                ),
+                "ca": "true",
+                "model": config.get("model", "25flash-default"),
+                "gdr": config.get("gender", "f"),
+                "t": sentences[idx],
+                "responseId": rid,
+                "af": "wav",
+            }
+        )
+    )
+    return rid
+
+
+async def receiver(ws, state):
+    """Background task: routes incoming WebSocket messages to per-sentence state."""
+    try:
+        async for raw in ws:
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            rid = data.get("responseId")
+            if not rid or rid not in state:
+                continue
+
+            s = state[rid]
+            ev = data.get("event")
+
+            if ev == "Tts_AudioChunk":
+                pcm = base64_to_pcm(data["audioContent"])
+                s["chunks"].append(pcm)
+                s["event"].set()
+            elif ev == "Tts_StreamingDone":
+                s["done"] = True
+                s["event"].set()
+            elif ev == "Tts_Error":
+                s["error"] = data.get("errorMessage", "TTS error")
+                s["event"].set()
+    except asyncio.CancelledError:
+        pass
+    except websockets.exceptions.ConnectionClosed:
+        pass
+
+
+# ── Main loop ─────────────────────────────────────────────────────────────────
+
+STATUS_LINE_LEN = 0
+
+
+def print_progress(idx, sentences):
+    global STATUS_LINE_LEN
+    n = len(sentences)
+    pct = (idx + 1) * 100 // n
+    preview = sentences[idx]
+    cols = os.get_terminal_size(fallback=(80, 24)).columns
+    max_preview = cols - 22
+    if len(preview) > max_preview:
+        preview = preview[: max_preview - 1] + "\u2026"
+    line = f"\r  \033[1m[{idx+1}/{n}]\033[0m {pct:>3}%  {preview}"
+    pad = max(0, STATUS_LINE_LEN - len(line))
+    sys.stderr.write(line + " " * pad)
+    sys.stderr.flush()
+    STATUS_LINE_LEN = len(line)
+
+
+async def run(text, config, cli_overrides):
+    merged = {**config, **{k: v for k, v in cli_overrides.items() if v is not None}}
+    sentences = split_sentences(text)
+    if not sentences:
+        print("No readable text found.", file=sys.stderr)
+        return
+
+    total = len(sentences)
+    sys.stderr.write(f"  {total} sentence{'s' if total != 1 else ''} to read\n")
+
+    audio_q = queue.Queue()
+    audio_thread = threading.Thread(
+        target=audio_worker, args=(audio_q, SAMPLE_RATE), daemon=True
+    )
+    audio_thread.start()
+
+    try:
+        async with websockets.connect(
+            merged["ws_url"],
+            origin="https://www.naturalreaders.com",
+            user_agent_header="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            close_timeout=5,
+        ) as ws:
+            state = {}
+            rid_for = {}
+
+            # Start background receiver
+            recv_task = asyncio.create_task(receiver(ws, state))
+
+            # Prefetch initial batch
+            for i in range(min(PREFETCH_AHEAD + 1, total)):
+                await send_tts(ws, i, sentences, merged, state, rid_for)
+
+            for i in range(total):
+                print_progress(i, sentences)
+                retries = 0
+
+                while True:  # retry loop
+                    # Ensure we have a request for this sentence
+                    if i not in rid_for:
+                        await send_tts(ws, i, sentences, merged, state, rid_for)
+
+                    rid = rid_for[i]
+                    s = state[rid]
+                    queued = 0
+
+                    # Stream chunks to audio queue as they arrive
+                    while True:
+                        while queued < len(s["chunks"]):
+                            audio_q.put(s["chunks"][queued])
+                            queued += 1
+
+                        if s["done"]:
+                            break
+                        if s.get("error"):
+                            break
+
+                        s["event"].clear()
+                        try:
+                            await asyncio.wait_for(s["event"].wait(), timeout=30)
+                        except asyncio.TimeoutError:
+                            s["error"] = "Timeout"
+                            break
+
+                    if s["done"]:
+                        break  # success → next sentence
+
+                    # ── Error → retry with exponential backoff ──
+                    retries += 1
+                    if retries > MAX_RETRIES:
+                        sys.stderr.write(
+                            f"\n  \033[31m✗ Skipping sentence {i+1} after {MAX_RETRIES} retries\033[0m\n"
+                        )
+                        break
+
+                    delay = BASE_RETRY_DELAY * (2 ** (retries - 1))
+                    sys.stderr.write(
+                        f"\r  \033[33m⟳ Retry {retries}/{MAX_RETRIES} in {delay:.1f}s…\033[0m"
+                    )
+                    sys.stderr.flush()
+                    await asyncio.sleep(delay)
+
+                    # Clean up failed state and re-request
+                    del state[rid]
+                    del rid_for[i]
+
+                # Prefetch ahead
+                pf = i + PREFETCH_AHEAD + 1
+                if pf < total and pf not in rid_for:
+                    await send_tts(ws, pf, sentences, merged, state, rid_for)
+
+            recv_task.cancel()
+            try:
+                await recv_task
+            except asyncio.CancelledError:
+                pass
+
+    except websockets.exceptions.InvalidStatusCode as e:
+        sys.stderr.write(f"\n  \033[31mWebSocket rejected ({e}). URL may have expired.\033[0m\n")
+    except websockets.exceptions.ConnectionClosed:
+        sys.stderr.write(f"\n  \033[31mWebSocket connection closed unexpectedly.\033[0m\n")
+    except OSError as e:
+        sys.stderr.write(f"\n  \033[31mConnection error: {e}\033[0m\n")
+    finally:
+        audio_q.put(None)  # stop sentinel
+        audio_thread.join(timeout=30)
+        sys.stderr.write("\n")
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Read text aloud using NaturalReaders TTS.",
+        epilog="Config: ~/.config/tts-reader/config.json  |  Run --setup to configure.",
+    )
+    parser.add_argument("file", nargs="?", help="Text file to read (default: clipboard)")
+    parser.add_argument("-s", "--speed", type=float, help="Speed multiplier (e.g. 1.5)")
+    parser.add_argument("-v", "--voice", help="Voice name (e.g. aoede)")
+    parser.add_argument("-i", "--instructions", help="Reading style instructions")
+    parser.add_argument("--setup", action="store_true", help="Interactive config setup")
+    args = parser.parse_args()
+
+    if args.setup:
+        run_setup()
+        return
+
+    config = load_config()
+    text = get_text(args)
+
+    cli_overrides = {
+        "speed": args.speed,
+        "voice": args.voice,
+        "instructions": args.instructions,
+    }
+
+    try:
+        asyncio.run(run(text, config, cli_overrides))
+    except KeyboardInterrupt:
+        sys.stderr.write("\n  Stopped.\n")
+
+
+if __name__ == "__main__":
+    main()
