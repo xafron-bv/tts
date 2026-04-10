@@ -203,22 +203,12 @@ function! s:HighlightSentence(text) abort
   if len(escaped) > 200
     let escaped = escaped[:199]
   endif
-  let pattern = '\V' . substitute(escaped, '\_s\+', '\\_s\\+', 'g')
-  " Also handle simple spaces
-  let pattern = substitute(pattern, ' ', '\\_s\\+', 'g')
+  let pattern = '\V' . substitute(escaped, ' ', '\\_s\\+', 'g')
 
   call cursor(1, 1)
   let found = search(pattern, 'cW')
   if found
-    let start_line = line('.')
-    call search(pattern, 'ceW')
-    let end_line = line('.')
-
-    for lnum in range(start_line, end_line)
-      call add(s:match_ids, matchaddpos('TTSCurrentSentence', [[lnum]]))
-    endfor
-
-    call cursor(start_line, 1)
+    call add(s:match_ids, matchadd('TTSCurrentSentence', pattern, 10))
     normal! zz
   else
     call winrestview(save_view)
