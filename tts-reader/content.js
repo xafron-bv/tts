@@ -7,6 +7,8 @@
   const PREFETCH_AHEAD = 2;
   const MAX_RETRIES = 4;
   const BASE_RETRY_DELAY = 500; // ms
+  const MAX_RECONNECT_ATTEMPTS = 3;
+  const BASE_RECONNECT_DELAY = 2000; // ms
   const DEFAULT_WS_BASE = 'wss://xujs4waht8.execute-api.us-east-1.amazonaws.com/prod-wpro/';
   const EXPIRATION_SKEW_MS = 30000;
 
@@ -14,6 +16,7 @@
   let config = null;
   let ws = null;
   let wsReconnecting = false;
+  let reconnectAttempt = 0;
   let chunks = [];          // { text, element }[]
   let currentIdx = -1;
   let playing = false;
@@ -364,14 +367,28 @@
         ws = null;
         if (playing && !wsReconnecting) {
           wsReconnecting = true;
-          showError('Connection lost. Reconnecting...');
-          setTimeout(() => connectWS().then(() => clearError()).catch(() => showError('Reconnect failed. Retrying...')), 2000);
+          reconnectAttempt = 0;
+          attemptReconnect();
         }
       };
       ws.onmessage = (e) => {
         try { handleWSMsg(JSON.parse(e.data)); } catch {}
       };
     });
+  }
+
+  function attemptReconnect() {
+    reconnectAttempt++;
+    if (reconnectAttempt > MAX_RECONNECT_ATTEMPTS) {
+      showError(`Reconnect failed after ${MAX_RECONNECT_ATTEMPTS} attempts`);
+      wsReconnecting = false;
+      return;
+    }
+    const delay = BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempt - 1);
+    showError(`Connection lost. Reconnecting... (${reconnectAttempt}/${MAX_RECONNECT_ATTEMPTS})`);
+    setTimeout(() => {
+      connectWS().then(() => clearError()).catch(() => attemptReconnect());
+    }, delay);
   }
 
   function sendTTS(idx, isRetry) {

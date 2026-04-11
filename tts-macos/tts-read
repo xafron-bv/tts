@@ -36,6 +36,11 @@ import time
 import termios
 from pathlib import Path
 
+import hashlib
+import hmac as hmac_mod
+from datetime import datetime, timezone
+from urllib.parse import quote, urlparse
+
 try:
     import numpy as np
 except ImportError:
@@ -75,6 +80,93 @@ def load_config():
 def save_config(config):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(config, indent=2) + "\n")
+
+
+EXPIRATION_SKEW_S = 30
+MAX_CONNECT_RETRIES = 3
+DEFAULT_WS_BASE = "wss://xujs4waht8.execute-api.us-east-1.amazonaws.com/prod-wpro/"
+
+
+def parse_expiration_epoch(expiration):
+    """Parse credential expiration into unix epoch seconds."""
+    if expiration is None:
+        return None
+    if isinstance(expiration, (int, float)):
+        return expiration / 1000 if expiration > 1e12 else float(expiration)
+    try:
+        return datetime.fromisoformat(str(expiration).replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def creds_expired(creds):
+    """Check if AWS credentials have expired (with 30s skew)."""
+    if not creds or not creds.get("access_key"):
+        return True
+    exp = parse_expiration_epoch(creds.get("expiration"))
+    if exp is None:
+        return False
+    return time.time() + EXPIRATION_SKEW_S >= exp
+
+
+def sign_wss_url(base_url, creds):
+    """Sign a WebSocket URL using AWS Signature V4."""
+    parsed = urlparse(base_url)
+    host = parsed.hostname
+    if parsed.port:
+        host += f":{parsed.port}"
+    path = parsed.path or "/"
+    region = "us-east-1"
+    service = "execute-api"
+
+    now = datetime.now(timezone.utc)
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    date_stamp = now.strftime("%Y%m%d")
+    cred_scope = f"{date_stamp}/{region}/{service}/aws4_request"
+
+    qs_params = {
+        "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+        "X-Amz-Credential": f"{creds['access_key']}/{cred_scope}",
+        "X-Amz-Date": amz_date,
+        "X-Amz-SignedHeaders": "host",
+    }
+    if creds.get("session_token"):
+        qs_params["X-Amz-Security-Token"] = creds["session_token"]
+
+    canonical_qs = "&".join(
+        f"{quote(k, safe='')}={quote(v, safe='')}"
+        for k, v in sorted(qs_params.items())
+    )
+
+    canonical_request = "\n".join([
+        "GET", path, canonical_qs,
+        f"host:{host}", "",
+        "host",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    ])
+
+    cr_hash = hashlib.sha256(canonical_request.encode()).hexdigest()
+    string_to_sign = "\n".join(["AWS4-HMAC-SHA256", amz_date, cred_scope, cr_hash])
+
+    def hmac_sha256(key, msg):
+        return hmac_mod.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
+
+    k_date = hmac_sha256(("AWS4" + creds["secret_key"]).encode("utf-8"), date_stamp)
+    k_region = hmac_mod.new(k_date, region.encode(), hashlib.sha256).digest()
+    k_service = hmac_mod.new(k_region, service.encode(), hashlib.sha256).digest()
+    k_signing = hmac_mod.new(k_service, b"aws4_request", hashlib.sha256).digest()
+    sig = hmac_mod.new(k_signing, string_to_sign.encode(), hashlib.sha256).hexdigest()
+
+    return f"wss://{host}{path}?{canonical_qs}&X-Amz-Signature={sig}"
+
+
+def get_ws_url(config):
+    """Get a signed WebSocket URL from config. Re-signs if fresh creds are available."""
+    creds = config.get("aws_credentials")
+    if creds and creds.get("access_key") and not creds_expired(creds):
+        base = config.get("ws_base_url", DEFAULT_WS_BASE)
+        return sign_wss_url(base, creds)
+    return config.get("ws_url", "")
 
 
 def run_login():
@@ -505,9 +597,11 @@ async def run(text, config, cli_overrides):
     key_stop = None
     key_thread = None
 
-    # Re-read config to get the latest ws_url (the config agent keeps it fresh)
+    # Re-read config to get the latest credentials (the config agent keeps them fresh)
     fresh = load_config()
     merged["ws_url"] = fresh.get("ws_url", merged.get("ws_url"))
+    merged["ws_base_url"] = fresh.get("ws_base_url", merged.get("ws_base_url"))
+    merged["aws_credentials"] = fresh.get("aws_credentials", merged.get("aws_credentials"))
 
     try:
         if tty_state:
@@ -520,132 +614,175 @@ async def run(text, config, cli_overrides):
             key_thread.start()
             sys.stderr.write("  space:pause  j/k:next/prev  [/]:speed  q:quit\n")
 
-        async with websockets.connect(
-            merged["ws_url"],
-            origin="https://www.naturalreaders.com",
-            user_agent_header="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            close_timeout=5,
-        ) as ws:
-            state = {}
-            rid_for = {}
+        ws_url = get_ws_url(merged)
+        if not ws_url:
+            sys.stderr.write(f"\n  \033[31mNo WebSocket URL or credentials. Run: tts-read --login\033[0m\n")
+            return
 
-            recv_task = asyncio.create_task(receiver(ws, state))
-
-            for i in range(min(PREFETCH_AHEAD + 1, total)):
-                await send_tts(ws, i, sentences, merged, state, rid_for)
-
-            current = 0
-            while 0 <= current < total:
-                print_progress(current, sentences, speed, paused)
-
-                ptask = asyncio.create_task(
-                    play_sentence(current, ws, sentences, merged, state, rid_for, audio_q)
-                )
-                jumped = False
-                stop = False
-
-                while not ptask.done():
-                    ctask = asyncio.create_task(cmd_q.get())
-                    done, _ = await asyncio.wait(
-                        {ptask, ctask}, return_when=asyncio.FIRST_COMPLETED
-                    )
-
-                    if ctask in done:
-                        cmd = ctask.result()
-
-                        if cmd == "quit":
-                            stop = True
-                            clear_audio(audio_q, pause_event)
-                            ptask.cancel()
-                            try:
-                                await ptask
-                            except asyncio.CancelledError:
-                                pass
+        last_error = None
+        for attempt in range(1, MAX_CONNECT_RETRIES + 1):
+            if attempt > 1:
+                fresh = load_config()
+                merged["ws_url"] = fresh.get("ws_url", merged.get("ws_url"))
+                merged["ws_base_url"] = fresh.get("ws_base_url", merged.get("ws_base_url"))
+                merged["aws_credentials"] = fresh.get("aws_credentials", merged.get("aws_credentials"))
+                ws_url = get_ws_url(merged)
+                if not ws_url:
+                    import webbrowser
+                    sys.stderr.write("\n  \033[33mOpening naturalreaders.com — sign in to refresh credentials…\033[0m\n")
+                    webbrowser.open("https://www.naturalreaders.com/online/")
+                    before = CONFIG_FILE.stat().st_mtime if CONFIG_FILE.exists() else 0
+                    for _ in range(15):
+                        await asyncio.sleep(1)
+                        if CONFIG_FILE.exists() and CONFIG_FILE.stat().st_mtime > before:
                             break
-
-                        elif cmd == "next":
-                            current += 1
-                            jumped = True
-                            clear_audio(audio_q, pause_event)
-                            paused = False
-                            ptask.cancel()
-                            try:
-                                await ptask
-                            except asyncio.CancelledError:
-                                pass
-                            break
-
-                        elif cmd == "prev":
-                            current = max(0, current - 1)
-                            jumped = True
-                            clear_audio(audio_q, pause_event)
-                            paused = False
-                            ptask.cancel()
-                            try:
-                                await ptask
-                            except asyncio.CancelledError:
-                                pass
-                            break
-
-                        elif cmd == "toggle_pause":
-                            if paused:
-                                pause_event.set()
-                                paused = False
-                            else:
-                                pause_event.clear()
-                                paused = True
-                            print_progress(current, sentences, speed, paused)
-
-                        elif cmd in ("speed_up", "speed_down"):
-                            idx = SPEEDS.index(speed) if speed in SPEEDS else 2
-                            if cmd == "speed_up":
-                                idx = min(len(SPEEDS) - 1, idx + 1)
-                            else:
-                                idx = max(0, idx - 1)
-                            speed = SPEEDS[idx]
-                            merged["speed"] = speed
-                            # Invalidate prefetched sentences at old speed
-                            for si in list(rid_for):
-                                if si > current:
-                                    state.pop(rid_for.pop(si), None)
-                            for i in range(1, PREFETCH_AHEAD + 1):
-                                pf = current + i
-                                if 0 <= pf < total and pf not in rid_for:
-                                    await send_tts(ws, pf, sentences, merged, state, rid_for)
-                            print_progress(current, sentences, speed, paused)
-
-                    else:
-                        ctask.cancel()
-                        try:
-                            await ctask
-                        except asyncio.CancelledError:
-                            pass
+                    fresh = load_config()
+                    merged["ws_url"] = fresh.get("ws_url", merged.get("ws_url"))
+                    merged["ws_base_url"] = fresh.get("ws_base_url", merged.get("ws_base_url"))
+                    merged["aws_credentials"] = fresh.get("aws_credentials", merged.get("aws_credentials"))
+                    ws_url = get_ws_url(merged)
+                    if not ws_url:
+                        sys.stderr.write("\n  \033[31m✗ Still no credentials available — giving up.\033[0m\n")
                         break
 
-                if stop:
-                    break
-                if not jumped:
-                    current += 1
-
-                pf = current + PREFETCH_AHEAD
-                if 0 <= pf < total and pf not in rid_for:
-                    await send_tts(ws, pf, sentences, merged, state, rid_for)
-
-            recv_task.cancel()
             try:
-                await recv_task
-            except asyncio.CancelledError:
-                pass
+                async with websockets.connect(
+                    ws_url,
+                    origin="https://www.naturalreaders.com",
+                    user_agent_header="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                    close_timeout=5,
+                ) as ws:
+                    state = {}
+                    rid_for = {}
 
-    except websockets.exceptions.ConnectionClosed:
-        sys.stderr.write(f"\n  \033[31mWebSocket connection closed unexpectedly.\033[0m\n")
-    except OSError as e:
-        sys.stderr.write(f"\n  \033[31mConnection error: {e}\033[0m\n")
-    except Exception as e:
-        if "websockets" in type(e).__module__:
-            sys.stderr.write(f"\n  \033[31mWebSocket error ({e}). URL may have expired — run: tts-read --login\033[0m\n")
-        else:
-            raise
+                    recv_task = asyncio.create_task(receiver(ws, state))
+
+                    for i in range(min(PREFETCH_AHEAD + 1, total)):
+                        await send_tts(ws, i, sentences, merged, state, rid_for)
+
+                    current = 0
+                    while 0 <= current < total:
+                        print_progress(current, sentences, speed, paused)
+
+                        ptask = asyncio.create_task(
+                            play_sentence(current, ws, sentences, merged, state, rid_for, audio_q)
+                        )
+                        jumped = False
+                        stop = False
+
+                        while not ptask.done():
+                            ctask = asyncio.create_task(cmd_q.get())
+                            done, _ = await asyncio.wait(
+                                {ptask, ctask}, return_when=asyncio.FIRST_COMPLETED
+                            )
+
+                            if ctask in done:
+                                cmd = ctask.result()
+
+                                if cmd == "quit":
+                                    stop = True
+                                    clear_audio(audio_q, pause_event)
+                                    ptask.cancel()
+                                    try:
+                                        await ptask
+                                    except asyncio.CancelledError:
+                                        pass
+                                    break
+
+                                elif cmd == "next":
+                                    current += 1
+                                    jumped = True
+                                    clear_audio(audio_q, pause_event)
+                                    paused = False
+                                    ptask.cancel()
+                                    try:
+                                        await ptask
+                                    except asyncio.CancelledError:
+                                        pass
+                                    break
+
+                                elif cmd == "prev":
+                                    current = max(0, current - 1)
+                                    jumped = True
+                                    clear_audio(audio_q, pause_event)
+                                    paused = False
+                                    ptask.cancel()
+                                    try:
+                                        await ptask
+                                    except asyncio.CancelledError:
+                                        pass
+                                    break
+
+                                elif cmd == "toggle_pause":
+                                    if paused:
+                                        pause_event.set()
+                                        paused = False
+                                    else:
+                                        pause_event.clear()
+                                        paused = True
+                                    print_progress(current, sentences, speed, paused)
+
+                                elif cmd in ("speed_up", "speed_down"):
+                                    idx = SPEEDS.index(speed) if speed in SPEEDS else 2
+                                    if cmd == "speed_up":
+                                        idx = min(len(SPEEDS) - 1, idx + 1)
+                                    else:
+                                        idx = max(0, idx - 1)
+                                    speed = SPEEDS[idx]
+                                    merged["speed"] = speed
+                                    # Invalidate prefetched sentences at old speed
+                                    for si in list(rid_for):
+                                        if si > current:
+                                            state.pop(rid_for.pop(si), None)
+                                    for i in range(1, PREFETCH_AHEAD + 1):
+                                        pf = current + i
+                                        if 0 <= pf < total and pf not in rid_for:
+                                            await send_tts(ws, pf, sentences, merged, state, rid_for)
+                                    print_progress(current, sentences, speed, paused)
+
+                            else:
+                                ctask.cancel()
+                                try:
+                                    await ctask
+                                except asyncio.CancelledError:
+                                    pass
+                                break
+
+                        if stop:
+                            break
+                        if not jumped:
+                            current += 1
+
+                        pf = current + PREFETCH_AHEAD
+                        if 0 <= pf < total and pf not in rid_for:
+                            await send_tts(ws, pf, sentences, merged, state, rid_for)
+
+                    recv_task.cancel()
+                    try:
+                        await recv_task
+                    except asyncio.CancelledError:
+                        pass
+                break
+            except websockets.exceptions.ConnectionClosed as e:
+                last_error = e
+            except OSError as e:
+                last_error = e
+            except Exception as e:
+                if "websockets" in type(e).__module__:
+                    last_error = e
+                else:
+                    raise
+
+            if attempt < MAX_CONNECT_RETRIES:
+                delay = BASE_RETRY_DELAY * (2 ** (attempt - 1))
+                sys.stderr.write(
+                    f"\n  \033[33m⟳ Connection attempt {attempt}/{MAX_CONNECT_RETRIES} failed ({last_error}). Retrying in {delay:.1f}s…\033[0m\n"
+                )
+                await asyncio.sleep(delay)
+            else:
+                sys.stderr.write(
+                    f"\n  \033[31m✗ Failed to connect after {MAX_CONNECT_RETRIES} attempts: {last_error}\033[0m\n"
+                )
     finally:
         if tty_state:
             if key_stop:

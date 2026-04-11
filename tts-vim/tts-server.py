@@ -24,6 +24,7 @@ import websockets.exceptions
 CONFIG_FILE = Path.home() / ".config" / "tts-reader" / "config.json"
 SAMPLE_RATE = 24000
 MAX_RETRIES = 4
+MAX_CONNECT_RETRIES = 3
 BASE_RETRY_DELAY = 0.5
 PREFETCH_AHEAD = 2
 DEFAULT_WS_BASE = "wss://xujs4waht8.execute-api.us-east-1.amazonaws.com/prod-wpro/"
@@ -281,40 +282,60 @@ class TTSServer:
             emit("error", message="No WebSocket URL or credentials configured")
             return
 
-        try:
-            async with websockets.connect(
-                ws_url,
-                origin="https://www.naturalreaders.com",
-                user_agent_header="Mozilla/5.0",
-                close_timeout=5,
-            ) as ws:
-                self.ws = ws
-                self.recv_task = asyncio.create_task(self.receiver())
+        last_error = None
+        for attempt in range(1, MAX_CONNECT_RETRIES + 1):
+            if attempt > 1:
+                self.config = load_config()
+                ws_url = get_ws_url(self.config)
+                if not ws_url:
+                    last_error = "No WebSocket URL or credentials"
+                    break
 
-                for i in range(min(PREFETCH_AHEAD + 1, len(self.sentences))):
-                    await self.send_tts(i)
+            try:
+                async with websockets.connect(
+                    ws_url,
+                    origin="https://www.naturalreaders.com",
+                    user_agent_header="Mozilla/5.0",
+                    close_timeout=5,
+                ) as ws:
+                    self.ws = ws
+                    self.recv_task = asyncio.create_task(self.receiver())
 
-                await self.play_loop()
+                    for i in range(min(PREFETCH_AHEAD + 1, len(self.sentences))):
+                        await self.send_tts(i)
 
-                self.recv_task.cancel()
-                try:
-                    await self.recv_task
-                except asyncio.CancelledError:
-                    pass
-        except Exception as e:
-            if "websockets" in type(e).__module__:
-                emit("error", message=f"WebSocket error — run tts-read --login to refresh")
+                    await self.play_loop()
+
+                    self.recv_task.cancel()
+                    try:
+                        await self.recv_task
+                    except asyncio.CancelledError:
+                        pass
+                break
+            except (websockets.exceptions.ConnectionClosed, OSError) as e:
+                last_error = e
+            except Exception as e:
+                if "websockets" in type(e).__module__:
+                    last_error = e
+                else:
+                    emit("error", message=str(e))
+                    last_error = e
+                    break
+
+            if attempt < MAX_CONNECT_RETRIES:
+                emit("error", message=f"Connection attempt {attempt}/{MAX_CONNECT_RETRIES} failed ({last_error}), retrying…")
+                await asyncio.sleep(BASE_RETRY_DELAY * (2 ** (attempt - 1)))
             else:
-                emit("error", message=str(e))
-        finally:
-            self.ws = None
-            self.audio_q.put(None)
-            if self.audio_thread:
-                self.audio_thread.join(timeout=5)
-            self.audio_thread = None
-            self.ws_state.clear()
-            self.rid_for.clear()
-            emit("finished" if not self.stop_requested else "stopped")
+                emit("error", message=f"Failed to connect after {MAX_CONNECT_RETRIES} attempts — run tts-read --login to refresh")
+
+        self.ws = None
+        self.audio_q.put(None)
+        if self.audio_thread:
+            self.audio_thread.join(timeout=5)
+        self.audio_thread = None
+        self.ws_state.clear()
+        self.rid_for.clear()
+        emit("finished" if not self.stop_requested else "stopped")
 
     async def play_loop(self):
         while 0 <= self.current_idx < len(self.sentences) and not self.stop_requested:
