@@ -9,6 +9,7 @@ import queue
 import base64
 import uuid
 import re
+import time
 from pathlib import Path
 
 import hashlib
@@ -27,6 +28,7 @@ MAX_RETRIES = 4
 MAX_CONNECT_RETRIES = 3
 BASE_RETRY_DELAY = 0.5
 PREFETCH_AHEAD = 2
+EXPIRATION_SKEW_S = 30
 DEFAULT_WS_BASE = "wss://xujs4waht8.execute-api.us-east-1.amazonaws.com/prod-wpro/"
 
 
@@ -138,13 +140,65 @@ def sign_wss_url(base_url, creds):
     return f"wss://{host}{path}?{canonical_qs}&X-Amz-Signature={sig}"
 
 
+def parse_expiration_epoch(expiration):
+    if expiration is None:
+        return None
+    if isinstance(expiration, (int, float)):
+        return expiration / 1000 if expiration > 1e12 else float(expiration)
+    try:
+        return datetime.fromisoformat(str(expiration).replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def creds_expired(creds):
+    if not creds or not creds.get("access_key"):
+        return True
+    exp = parse_expiration_epoch(creds.get("expiration"))
+    if exp is None:
+        return False
+    return time.time() + EXPIRATION_SKEW_S >= exp
+
+
+def creds_stale(config):
+    creds = config.get("aws_credentials")
+    if not creds or not creds.get("access_key"):
+        return not config.get("ws_url")
+    return creds_expired(creds)
+
+
 def get_ws_url(config):
     """Get a signed WebSocket URL from config, signing fresh if credentials are available."""
     creds = config.get("aws_credentials")
-    if creds and creds.get("access_key"):
+    if creds and creds.get("access_key") and not creds_expired(creds):
         base = config.get("ws_base_url", DEFAULT_WS_BASE)
         return sign_wss_url(base, creds)
     return config.get("ws_url", "")
+
+
+async def auto_login(timeout=30):
+    """Open NaturalReaders and wait for the config agent to push fresh credentials."""
+    import webbrowser
+    import urllib.request
+    import urllib.error
+    try:
+        urllib.request.urlopen("http://127.0.0.1:18412/config", timeout=1)
+    except urllib.error.HTTPError:
+        pass
+    except urllib.error.URLError:
+        emit("error", message="Config agent not running; run: bash tts-macos/install.sh")
+        return False
+
+    before = CONFIG_FILE.stat().st_mtime if CONFIG_FILE.exists() else 0
+    emit("error", message="Refreshing credentials — opening NaturalReaders…")
+    webbrowser.open("https://www.naturalreaders.com/online/")
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        await asyncio.sleep(0.5)
+        if CONFIG_FILE.exists() and CONFIG_FILE.stat().st_mtime > before:
+            return True
+    return False
 
 
 def split_sentences(text):
@@ -275,21 +329,20 @@ class TTSServer:
         )
         self.audio_thread.start()
 
-        # Re-read config to get the latest credentials
-        self.config = load_config()
-        ws_url = get_ws_url(self.config)
-        if not ws_url:
-            emit("error", message="No WebSocket URL or credentials configured")
-            return
-
         last_error = None
         for attempt in range(1, MAX_CONNECT_RETRIES + 1):
-            if attempt > 1:
-                self.config = load_config()
-                ws_url = get_ws_url(self.config)
-                if not ws_url:
-                    last_error = "No WebSocket URL or credentials"
+            self.config = load_config()
+
+            if creds_stale(self.config):
+                if not await auto_login():
+                    last_error = "Could not refresh credentials"
                     break
+                self.config = load_config()
+
+            ws_url = get_ws_url(self.config)
+            if not ws_url:
+                last_error = "No WebSocket URL available"
+                break
 
             try:
                 async with websockets.connect(
@@ -326,7 +379,7 @@ class TTSServer:
                 emit("error", message=f"Connection attempt {attempt}/{MAX_CONNECT_RETRIES} failed ({last_error}), retrying…")
                 await asyncio.sleep(BASE_RETRY_DELAY * (2 ** (attempt - 1)))
             else:
-                emit("error", message=f"Failed to connect after {MAX_CONNECT_RETRIES} attempts — run tts-read --login to refresh")
+                emit("error", message=f"Failed to connect after {MAX_CONNECT_RETRIES} attempts: {last_error}")
 
         self.ws = None
         self.audio_q.put(None)

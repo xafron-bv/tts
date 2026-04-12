@@ -7,6 +7,7 @@ Usage:
     tts-read                     Read from clipboard
     tts-read file.txt            Read a file
     echo "hello" | tts-read      Read from stdin
+    echo "hello" | tts-read -    Read from stdin (explicit)
 
 Keyboard:  space=pause  j/k=next/prev  [/]=speed  q=quit  Ctrl-C=force quit
 """
@@ -72,7 +73,10 @@ ACTIVE_TTY_STATE = None
 
 def load_config():
     if not CONFIG_FILE.exists():
-        print(f"No config found. Run: tts-read --login", file=sys.stderr)
+        sys.stderr.write("  No config found — opening NaturalReaders to capture settings…\n")
+        auto_login_sync(timeout=60)
+    if not CONFIG_FILE.exists():
+        print("Could not obtain config. Make sure the Chrome extension is installed.", file=sys.stderr)
         sys.exit(1)
     return json.loads(CONFIG_FILE.read_text())
 
@@ -169,24 +173,73 @@ def get_ws_url(config):
     return config.get("ws_url", "")
 
 
-def run_login():
-    """Open NaturalReaders and wait for the config agent to receive config from the extension."""
-    import webbrowser
-    import urllib.request
+def creds_stale(config):
+    """Return True if we should refresh: no creds/url or creds have expired."""
+    creds = config.get("aws_credentials")
+    if not creds or not creds.get("access_key"):
+        return not config.get("ws_url")
+    return creds_expired(creds)
 
-    # Check that the config agent is running
+
+def _config_agent_running():
+    import urllib.request
+    import urllib.error
     try:
         urllib.request.urlopen("http://127.0.0.1:18412/config", timeout=1)
+        return True
     except urllib.error.HTTPError:
-        pass  # Any HTTP response (501, 404, etc.) means it's listening
+        return True
     except urllib.error.URLError:
+        return False
+
+
+def _open_login_page():
+    import webbrowser
+    webbrowser.open("https://www.naturalreaders.com/online/")
+
+
+def auto_login_sync(timeout=60):
+    """Open NaturalReaders and block until the config agent saves fresh config."""
+    if not _config_agent_running():
+        sys.stderr.write("  \033[31m✗ Config agent not running. Run: bash install.sh\033[0m\n")
+        return False
+    before = CONFIG_FILE.stat().st_mtime if CONFIG_FILE.exists() else 0
+    sys.stderr.write("  \033[33mOpening NaturalReaders to refresh credentials…\033[0m\n")
+    _open_login_page()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(0.5)
+        if CONFIG_FILE.exists() and CONFIG_FILE.stat().st_mtime > before:
+            return True
+    return False
+
+
+async def auto_login_async(timeout=30):
+    """Async version of auto_login — opens browser and awaits a config update."""
+    if not _config_agent_running():
+        sys.stderr.write("\n  \033[31m✗ Config agent not running. Run: bash install.sh\033[0m\n")
+        return False
+    before = CONFIG_FILE.stat().st_mtime if CONFIG_FILE.exists() else 0
+    sys.stderr.write("\n  \033[33mOpening NaturalReaders to refresh credentials…\033[0m\n")
+    _open_login_page()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        await asyncio.sleep(0.5)
+        if CONFIG_FILE.exists() and CONFIG_FILE.stat().st_mtime > before:
+            return True
+    return False
+
+
+def run_login():
+    """Open NaturalReaders and wait for the config agent to receive config from the extension."""
+    if not _config_agent_running():
         print("Config agent is not running. Run: bash install.sh", file=sys.stderr)
         sys.exit(1)
 
     print("  Opening NaturalReaders — play any voice to capture settings.")
     print("  The config agent will save settings automatically.\n")
 
-    webbrowser.open("https://www.naturalreaders.com/online/")
+    _open_login_page()
 
     # Poll until config appears or is updated
     before = CONFIG_FILE.stat().st_mtime if CONFIG_FILE.exists() else 0
@@ -211,6 +264,9 @@ def run_login():
 
 
 def get_text(args):
+    if args.file == "-":
+        return sys.stdin.read()
+
     if args.file:
         p = Path(args.file)
         if not p.exists():
@@ -614,36 +670,26 @@ async def run(text, config, cli_overrides):
             key_thread.start()
             sys.stderr.write("  space:pause  j/k:next/prev  [/]:speed  q:quit\n")
 
-        ws_url = get_ws_url(merged)
-        if not ws_url:
-            sys.stderr.write(f"\n  \033[31mNo WebSocket URL or credentials. Run: tts-read --login\033[0m\n")
-            return
-
         last_error = None
         for attempt in range(1, MAX_CONNECT_RETRIES + 1):
-            if attempt > 1:
+            fresh = load_config()
+            merged["ws_url"] = fresh.get("ws_url", merged.get("ws_url"))
+            merged["ws_base_url"] = fresh.get("ws_base_url", merged.get("ws_base_url"))
+            merged["aws_credentials"] = fresh.get("aws_credentials", merged.get("aws_credentials"))
+
+            if creds_stale(merged):
+                if not await auto_login_async():
+                    sys.stderr.write("\n  \033[31m✗ Could not refresh credentials.\033[0m\n")
+                    break
                 fresh = load_config()
                 merged["ws_url"] = fresh.get("ws_url", merged.get("ws_url"))
                 merged["ws_base_url"] = fresh.get("ws_base_url", merged.get("ws_base_url"))
                 merged["aws_credentials"] = fresh.get("aws_credentials", merged.get("aws_credentials"))
-                ws_url = get_ws_url(merged)
-                if not ws_url:
-                    import webbrowser
-                    sys.stderr.write("\n  \033[33mOpening naturalreaders.com — sign in to refresh credentials…\033[0m\n")
-                    webbrowser.open("https://www.naturalreaders.com/online/")
-                    before = CONFIG_FILE.stat().st_mtime if CONFIG_FILE.exists() else 0
-                    for _ in range(15):
-                        await asyncio.sleep(1)
-                        if CONFIG_FILE.exists() and CONFIG_FILE.stat().st_mtime > before:
-                            break
-                    fresh = load_config()
-                    merged["ws_url"] = fresh.get("ws_url", merged.get("ws_url"))
-                    merged["ws_base_url"] = fresh.get("ws_base_url", merged.get("ws_base_url"))
-                    merged["aws_credentials"] = fresh.get("aws_credentials", merged.get("aws_credentials"))
-                    ws_url = get_ws_url(merged)
-                    if not ws_url:
-                        sys.stderr.write("\n  \033[31m✗ Still no credentials available — giving up.\033[0m\n")
-                        break
+
+            ws_url = get_ws_url(merged)
+            if not ws_url:
+                sys.stderr.write("\n  \033[31m✗ No WebSocket URL available.\033[0m\n")
+                break
 
             try:
                 async with websockets.connect(

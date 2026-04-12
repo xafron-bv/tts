@@ -60,6 +60,7 @@ Requires Python 3 and Homebrew (for portaudio).
 tts-read                        # read clipboard
 tts-read file.txt               # read a file
 echo "hello" | tts-read         # pipe text
+echo "hello" | tts-read -       # pipe text (explicit stdin)
 tts-read -s 2 -v puck           # 2x speed, different voice
 ```
 
@@ -151,4 +152,4 @@ This means authentication stays fresh automatically as long as:
 2. You visit naturalreaders.com occasionally (the URL refreshes on each visit)
 3. The config agent is running (`install.sh` sets it up as a launchd service)
 
-If connections start failing with a 403, just open naturalreaders.com in Chrome — the extension will push a fresh URL to the config agent within seconds. Run `tts-read --login` for first-time setup.
+If credentials have expired, the CLI and vim plugin will automatically open naturalreaders.com in the browser and wait for the extension to push a fresh URL — no need to run `tts-read --login` manually. That command is still available for first-time setup, but isn't required afterward.
